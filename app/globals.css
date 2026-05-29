@@ -1,26 +1,152 @@
 @import "tailwindcss";
 
+/* ===========================================================================
+ * Liner Chat — dark-only theme.
+ * Palette + typography ported from the Figma Make design (see docs).
+ * ========================================================================= */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --font-size: 16px;
+
+  /* Palette */
+  --background: #0B0B0E;
+  --background-alt: #15151A;
+  --foreground: #F4EFE6;
+  --card: #15151A;
+  --card-foreground: #F4EFE6;
+  --popover: #15151A;
+  --popover-foreground: #F4EFE6;
+  --primary: #F4EFE6;
+  --primary-foreground: #0B0B0E;
+  --secondary: #3B6B73;             /* bruised teal */
+  --secondary-foreground: #F4EFE6;
+  --muted: rgba(244, 239, 230, 0.3);
+  --muted-foreground: rgba(244, 239, 230, 0.6);
+  --accent: #C9A65D;                /* bleached mustard */
+  --accent-foreground: #0B0B0E;
+  --destructive: #A1342A;           /* film red */
+  --destructive-foreground: #F4EFE6;
+  --border: rgba(244, 239, 230, 0.1);
+  --input: transparent;
+  --input-background: rgba(244, 239, 230, 0.05);
+  --spotify-green: #1DB954;
+  --teal: #3B6B73;
+  --mustard: #C9A65D;
+  --film-red: #A1342A;
+
+  /*
+   * --font-* variables are owned by next/font (app/layout.tsx) and then
+   * augmented by an inline <style> in <head> that prepends the matching
+   * Korean family before the generic fallback. Hardcoding default values
+   * here would override that chain — DevTools confirmed the previous
+   * version was clipping Hangul down to OS Malgun Gothic for exactly that
+   * reason.
+   */
+
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: rgba(244, 239, 230, 0.3);
+  --radius: 0.625rem;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-background-alt: var(--background-alt);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-spotify-green: var(--spotify-green);
+  --color-teal: var(--teal);
+  --color-mustard: var(--mustard);
+  --color-film-red: var(--film-red);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  html {
+    font-size: var(--font-size);
+    /* Stretch html to the visible viewport so children using min-h-screen
+     * (and our dvh fallback below) line up with what the user actually sees. */
+    min-height: 100%;
   }
-}
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    /* font-family chain (Latin → Korean → generic) defined further down. */
+    position: relative;
+    /* Prefer dvh (dynamic viewport) so the iOS Safari address bar collapsing
+     * doesn't leave a gap or clip the footer. Old browsers fall back to vh. */
+    min-height: 100vh;
+    min-height: 100dvh;
+    /* Respect notches / home-indicator on iOS while still painting the
+     * background full-bleed (viewportFit: 'cover'). */
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Override Tailwind's min-h-screen utility globally so every page picks
+   * up dvh without us touching each page. The duplicated declaration is the
+   * standard vh-then-dvh progressive enhancement. */
+  .min-h-screen {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  .h-screen {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  /* Subtle film grain overlay — applied at the page edge, behind interactive
+   * surfaces (z-index high so it sits above background but doesn't intercept
+   * clicks). 3% opacity per design spec. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /*
+   * Korean fallback is wired in app/layout.tsx via next/font's `fallback`
+   * option, so each Latin --font-* variable already evaluates to a chain
+   * that includes the matching Noto family before the generic fallback.
+   * Chaining a second var() here would be dead code (and CSS parsers
+   * don't reliably merge chained var()s anyway), so the utilities just
+   * point at the variables directly.
+   */
+  .font-display { font-family: var(--font-display); }
+  .font-serif { font-family: var(--font-serif); }
+  .font-sans { font-family: var(--font-sans); }
+  .font-mono { font-family: var(--font-mono); }
+  .font-korean-serif { font-family: var(--font-korean-serif); }
+  .font-korean-sans { font-family: var(--font-korean-sans); }
+
+  /* Body picks up the sans chain so loose text (no font-* utility) still
+   * renders Hangul in Noto Sans KR. */
+  body {
+    font-family: var(--font-sans);
+  }
 }

@@ -1,65 +1,204 @@
-import Image from "next/image";
+import { desc, eq } from 'drizzle-orm'
+import Link from 'next/link'
+import { db } from '@/db/client'
+import { artists, curations, tracks, users } from '@/db/schema'
+import { HomeChat } from '@/components/HomeChat'
+import { formatRelativeKo } from '@/lib/format'
+import { authErrorMessage, messages as m } from '@/lib/messages'
+import { getUserSession } from '@/lib/session'
 
-export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+export const dynamic = 'force-dynamic'
+
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ auth_error?: string }>
+}) {
+  const params = await searchParams
+  const errorMessage = authErrorMessage(params.auth_error)
+
+  const session = await getUserSession()
+
+  if (!session) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center px-8 relative">
+        <div className="absolute top-8 left-8 font-mono uppercase tracking-widest text-sm text-[color:var(--muted-foreground)]">
+          LINER <span style={{ color: 'var(--spotify-green)' }}>·</span> CHAT
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+
+        {errorMessage ? (
+          <div
+            className="font-korean-sans absolute top-20 left-8 right-8 max-w-md mx-auto border-l-2 px-4 py-3 text-sm"
+            style={{
+              borderColor: 'var(--film-red)',
+              backgroundColor: 'rgba(161, 52, 42, 0.1)',
+              color: 'var(--foreground)',
+            }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            {errorMessage}
+          </div>
+        ) : null}
+
+        <div className="max-w-3xl w-full text-center space-y-8">
+          <h1
+            className="font-display"
+            style={{
+              fontSize: 'clamp(56px, 8vw, 80px)',
+              lineHeight: '1.1',
+            }}
           >
-            Documentation
-          </a>
+            Follow the kinship.
+            <br />
+            Across genre, era, country.
+          </h1>
+
+          <div className="flex justify-center">
+            <a
+              href="/api/auth/login"
+              className="font-mono px-8 py-3 rounded-full text-sm transition-all hover:opacity-90"
+              style={{
+                backgroundColor: 'var(--spotify-green)',
+                color: '#000',
+              }}
+            >
+              Continue with Spotify
+            </a>
+          </div>
+        </div>
+
+        <div
+          className="absolute left-8 font-mono text-xs text-[color:var(--muted-foreground)]"
+          style={{ bottom: 'max(2rem, env(safe-area-inset-bottom))' }}
+        >
+          {m.auth.actions.hint}
         </div>
       </main>
-    </div>
-  );
+    )
+  }
+
+  const [displayNameRow, recentCurations] = await Promise.all([
+    db
+      .select({ name: users.displayName })
+      .from(users)
+      .where(eq(users.id, session.userId))
+      .limit(1),
+    db
+      .select({
+        id: curations.id,
+        createdAt: curations.createdAt,
+        trackName: tracks.name,
+        artistName: artists.name,
+        coverUrl: tracks.albumCoverUrl,
+      })
+      .from(curations)
+      .innerJoin(tracks, eq(curations.seedTrackId, tracks.id))
+      .innerJoin(artists, eq(tracks.artistId, artists.id))
+      .where(eq(curations.userId, session.userId))
+      .orderBy(desc(curations.createdAt))
+      .limit(5),
+  ])
+  const displayName = displayNameRow[0]?.name ?? session.userId
+
+  return (
+    <main className="min-h-screen px-8 py-8 max-w-[1440px] mx-auto">
+      <div className="flex justify-between items-start mb-16">
+        <div className="font-mono uppercase tracking-widest text-sm text-[color:var(--muted-foreground)]">
+          LINER <span style={{ color: 'var(--spotify-green)' }}>·</span> CHAT
+        </div>
+        <div className="font-mono text-sm flex items-center gap-4">
+          <Link
+            href="/settings"
+            className="text-[color:var(--muted-foreground)] hover:text-[color:var(--foreground)] transition-colors"
+          >
+            settings
+          </Link>
+          <span className="text-[color:var(--muted-foreground)]">{displayName}</span>
+          <form action="/api/auth/logout" method="post" className="contents">
+            <button
+              type="submit"
+              className="text-[color:var(--foreground)] hover:text-[color:var(--muted-foreground)] transition-colors"
+            >
+              logout
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {errorMessage ? (
+        <div
+          className="font-korean-sans mb-12 border-l-2 px-4 py-3 text-sm max-w-4xl mx-auto"
+          style={{
+            borderColor: 'var(--film-red)',
+            backgroundColor: 'rgba(161, 52, 42, 0.1)',
+            color: 'var(--foreground)',
+          }}
+        >
+          {errorMessage}
+        </div>
+      ) : null}
+
+      <div className="max-w-4xl mx-auto space-y-12">
+        <HomeChat displayName={displayName} />
+
+        {recentCurations.length > 0 ? (
+          <div className="pt-8 border-t border-[color:var(--border)]">
+            <h3 className="font-mono uppercase tracking-wider text-xs text-[color:var(--muted-foreground)] mb-6">
+              Recent diggings
+            </h3>
+            <div className="space-y-3">
+              {recentCurations.map((c) => (
+                <Link
+                  key={c.id}
+                  href={`/curations/${c.id}`}
+                  className="flex items-center justify-between gap-4 hover:text-[color:var(--accent)] transition-colors group"
+                >
+                  <div className="flex items-center gap-4 min-w-0">
+                    {c.coverUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={c.coverUrl}
+                        alt=""
+                        width={40}
+                        height={40}
+                        loading="lazy"
+                        className="shrink-0 block"
+                        style={{
+                          width: 40,
+                          height: 40,
+                          objectFit: 'cover',
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="shrink-0"
+                        style={{
+                          width: 40,
+                          height: 40,
+                          background: 'rgba(244,239,230,0.05)',
+                        }}
+                      />
+                    )}
+                    <div className="flex items-baseline gap-4 min-w-0">
+                      <span
+                        className="font-serif group-hover:text-[color:var(--accent)] transition-colors truncate"
+                        style={{ fontSize: '18px' }}
+                      >
+                        {c.trackName}
+                      </span>
+                      <span className="font-mono text-xs text-[color:var(--muted-foreground)] truncate">
+                        {c.artistName}
+                      </span>
+                    </div>
+                  </div>
+                  <span className="font-mono text-xs text-[color:var(--muted-foreground)] shrink-0">
+                    {formatRelativeKo(c.createdAt)}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </main>
+  )
 }
