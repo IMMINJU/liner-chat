@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1780019002721,
+      "tag": "0000_lively_slipstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780020884375,
+      "tag": "0001_thankful_venom",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780037224029,
+      "tag": "0002_skinny_zarek",
+      "breakpoints": true
+    }
+  ]
+}
