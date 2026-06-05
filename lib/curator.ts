@@ -1,15 +1,8 @@
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { db } from '@/db/client'
-import {
-  artists,
-  curationTracks,
-  curations,
-  likedTracks,
-  plays,
-  topTracks,
-  tracks,
-} from '@/db/schema'
+import { curationTracks, curations, tracks } from '@/db/schema'
 import { getArtistTopTags, getTrackTopTags } from './lastfm'
+import { LOCAL_USER, ensureLocalUser } from './localUser'
 import {
   recommendKinship,
   type Category,
@@ -19,7 +12,6 @@ import {
 import {
   getArtist,
   getTrack,
-  getTrackPopularities,
   searchOneTrack,
   verifyTrack,
   type VerifiedTrack,
@@ -32,8 +24,6 @@ import {
 export type CurationSeedInput =
   | { type: 'track_id'; track_id: string }
   | { type: 'track_text'; track_query: string }
-  | { type: 'auto_top_recent' }
-  | { type: 'auto_dormant_liked' }
 
 export type CurationTrackCard = {
   id: string
@@ -43,6 +33,7 @@ export type CurationTrackCard = {
   year: number | null
   spotifyUrl: string | null
   previewUrl: string | null
+  coverUrl: string | null
   category: Category
   sonic_link: string
   link_dimensions: string[]
@@ -77,12 +68,7 @@ export type CurateOk = {
 
 export type CurateError = {
   ok: false
-  code:
-    | 'seed_not_found'
-    | 'sync_required'
-    | 'llm_failed'
-    | 'all_dropped'
-    | 'unknown'
+  code: 'seed_not_found' | 'llm_failed' | 'all_dropped' | 'unknown'
   message: string
 }
 
@@ -91,77 +77,6 @@ export type CurateResult = CurateOk | CurateError
 // ---------------------------------------------------------------------------
 // Seed resolution
 // ---------------------------------------------------------------------------
-
-/** Return the trackId set the user "has" — liked ∪ top ∪ played. */
-async function loadUserLibrary(userId: string): Promise<Set<string>> {
-  const [liked, top, played] = await Promise.all([
-    db
-      .select({ id: likedTracks.trackId })
-      .from(likedTracks)
-      .where(eq(likedTracks.userId, userId)),
-    db
-      .select({ id: topTracks.trackId })
-      .from(topTracks)
-      .where(eq(topTracks.userId, userId)),
-    db
-      .select({ id: plays.trackId })
-      .from(plays)
-      .where(eq(plays.userId, userId)),
-  ])
-  const out = new Set<string>()
-  for (const r of liked) out.add(r.id)
-  for (const r of top) out.add(r.id)
-  for (const r of played) out.add(r.id)
-  return out
-}
-
-/** Auto seed: pick from the most recent short_term top_tracks snapshot. */
-async function pickAutoTopRecent(userId: string): Promise<string | null> {
-  const latest = await db
-    .select({ snapshotAt: topTracks.snapshotAt })
-    .from(topTracks)
-    .where(
-      and(eq(topTracks.userId, userId), eq(topTracks.timeRange, 'short_term'))
-    )
-    .orderBy(desc(topTracks.snapshotAt))
-    .limit(1)
-  const snap = latest[0]?.snapshotAt
-  if (!snap) return null
-
-  const rows = await db
-    .select({ trackId: topTracks.trackId, rank: topTracks.rank })
-    .from(topTracks)
-    .where(
-      and(
-        eq(topTracks.userId, userId),
-        eq(topTracks.timeRange, 'short_term'),
-        eq(topTracks.snapshotAt, snap)
-      )
-    )
-    .orderBy(topTracks.rank)
-    .limit(10)
-  if (rows.length === 0) return null
-  const pick = rows[Math.floor(Math.random() * Math.min(5, rows.length))]
-  return pick.trackId
-}
-
-/** Auto seed: a liked track not played in the past 90 days. */
-async function pickAutoDormantLiked(userId: string): Promise<string | null> {
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
-  const recentPlays = await db
-    .select({ id: plays.trackId })
-    .from(plays)
-    .where(and(eq(plays.userId, userId), sql`${plays.playedAt} >= ${ninetyDaysAgo}`))
-  const recentSet = new Set(recentPlays.map((r) => r.id))
-
-  const liked = await db
-    .select({ id: likedTracks.trackId })
-    .from(likedTracks)
-    .where(eq(likedTracks.userId, userId))
-  const dormant = liked.map((r) => r.id).filter((id) => !recentSet.has(id))
-  if (dormant.length === 0) return null
-  return dormant[Math.floor(Math.random() * dormant.length)]
-}
 
 type ResolvedSeed = {
   trackId: string
@@ -176,13 +91,10 @@ type ResolvedSeed = {
 }
 
 async function resolveSeed(
-  userId: string,
   input: CurationSeedInput
 ): Promise<ResolvedSeed | null> {
-  let trackId: string | null = null
-
   if (input.type === 'track_text') {
-    const hit = await searchOneTrack(userId, input.track_query)
+    const hit = await searchOneTrack(input.track_query)
     if (!hit) return null
     return {
       trackId: hit.id,
@@ -197,16 +109,7 @@ async function resolveSeed(
     }
   }
 
-  if (input.type === 'track_id') {
-    trackId = input.track_id
-  } else if (input.type === 'auto_top_recent') {
-    trackId = await pickAutoTopRecent(userId)
-  } else {
-    trackId = await pickAutoDormantLiked(userId)
-  }
-  if (!trackId) return null
-
-  const fresh = await getTrack(userId, trackId)
+  const fresh = await getTrack(input.track_id)
   if (!fresh) return null
   return {
     trackId: fresh.id,
@@ -222,62 +125,18 @@ async function resolveSeed(
 }
 
 // ---------------------------------------------------------------------------
-// Listener profile
-// ---------------------------------------------------------------------------
-
-/**
- * Average Spotify popularity across up to 200 liked/top tracks → bucket.
- * Data-poor (<20 tracks) defaults to 'mixed'.
- */
-async function estimateLibrarySophistication(
-  userId: string
-): Promise<'mainstream' | 'mixed' | 'obscure'> {
-  const [liked, top] = await Promise.all([
-    db
-      .select({ id: likedTracks.trackId })
-      .from(likedTracks)
-      .where(eq(likedTracks.userId, userId))
-      .limit(200),
-    db
-      .select({ id: topTracks.trackId })
-      .from(topTracks)
-      .where(eq(topTracks.userId, userId))
-      .limit(200),
-  ])
-  const ids = new Set<string>()
-  for (const r of liked) ids.add(r.id)
-  for (const r of top) ids.add(r.id)
-  const sample = [...ids].slice(0, 200)
-  if (sample.length < 20) return 'mixed'
-
-  const pops = await getTrackPopularities(userId, sample)
-  if (pops.size < 20) return 'mixed'
-  let sum = 0
-  for (const v of pops.values()) sum += v
-  const avg = sum / pops.size
-  if (avg >= 60) return 'mainstream'
-  if (avg >= 30) return 'mixed'
-  return 'obscure'
-}
-
-// ---------------------------------------------------------------------------
 // Seed context
 // ---------------------------------------------------------------------------
 
-async function buildSeedContext(
-  userId: string,
-  seed: ResolvedSeed
-): Promise<SeedContext> {
-  const [artist, trackTags, artistTags, sophistication] = await Promise.all([
-    seed.artistId ? getArtist(userId, seed.artistId) : Promise.resolve(null),
+async function buildSeedContext(seed: ResolvedSeed): Promise<SeedContext> {
+  const [artist, trackTags, artistTags] = await Promise.all([
+    seed.artistId ? getArtist(seed.artistId) : Promise.resolve(null),
     getTrackTopTags(seed.artistName, seed.name).catch(() => []),
     getArtistTopTags(seed.artistName).catch(() => []),
-    estimateLibrarySophistication(userId),
   ])
 
   // Spotify made /v1/audio-features private to apps created after 2024-11-27.
   // We were created after the cut-off, so audio/tonal are always empty; the
-  // sync stage that would have populated them is disabled in runSync. The
   // shape is preserved so the kinship prompt template doesn't need to branch.
   const audio: SeedContext['audio'] = {}
   const tonal: SeedContext['tonal'] = {}
@@ -294,9 +153,12 @@ async function buildSeedContext(
     lastfmArtistTags: artistTags.map((t) => t.name),
     audio,
     tonal,
+    // Login-less mode: there's no user library to profile, so accessibility
+    // tuning falls back to 'mixed' (balanced). The seed track's *own*
+    // popularity is still a real signal and is passed through.
     listenerProfile: {
       seedPopularity: seed.popularity,
-      librarySophistication: sophistication,
+      librarySophistication: 'mixed',
     },
   }
 }
@@ -315,6 +177,7 @@ type RecWithVerified = {
   year: number | null
   spotifyUrl: string | null
   previewUrl: string | null
+  coverUrl: string | null
   sonic_link: string
   link_dimensions: string[]
 }
@@ -328,10 +191,9 @@ type RecWithVerified = {
  * seed artist can keep surfacing across the chain (we recommend per-track,
  * not per-artist). Aborts if any ancestor is owned by a different user.
  */
-async function collectChainContext(args: {
-  userId: string
+async function collectChainContext(
   parentCurationId: number
-}): Promise<{ chainArtistIds: Set<string>; ancestorIds: number[] }> {
+): Promise<{ chainArtistIds: Set<string>; ancestorIds: number[] }> {
   type AncestorRow = {
     id: number
     seedTrackId: string
@@ -339,7 +201,7 @@ async function collectChainContext(args: {
     userId: string
   }
   const chain: { id: number; seedTrackId: string }[] = []
-  let curId: number | null = args.parentCurationId
+  let curId: number | null = parentCurationId
   let hops = 0
   while (curId !== null && hops < 50) {
     const row: AncestorRow[] = await db
@@ -354,7 +216,7 @@ async function collectChainContext(args: {
       .limit(1)
     const r: AncestorRow | undefined = row[0]
     if (!r) break
-    if (r.userId !== args.userId) break // security guard
+    if (r.userId !== LOCAL_USER) break // security guard
     chain.unshift({ id: r.id, seedTrackId: r.seedTrackId })
     curId = r.parentId ?? null
     hops++
@@ -393,9 +255,7 @@ async function collectChainContext(args: {
 }
 
 async function verifyAndFilter(
-  userId: string,
   llm: KinshipResponse,
-  library: Set<string>,
   seedTrackId: string,
   chainArtistIds: Set<string>
 ): Promise<{
@@ -408,7 +268,7 @@ async function verifyAndFilter(
   // Run verifyTrack in parallel.
   const verifiedResults = await Promise.all(
     llm.tracks.map(async (t) => {
-      const v = await verifyTrack(userId, {
+      const v = await verifyTrack({
         artist: t.artist,
         track: t.track,
         album: t.album,
@@ -418,19 +278,18 @@ async function verifyAndFilter(
     })
   )
   const verified = verifiedResults.filter(
-    (r): r is { llm: (typeof llm.tracks)[number]; v: VerifiedTrack } => r !== null
+    (r): r is { llm: (typeof llm.tracks)[number]; v: VerifiedTrack } =>
+      r !== null
   )
 
-  // Dedupe vs library + seed itself + chain artists (digging chain).
+  // Dedupe vs seed itself, any track the LLM proposed twice, and (when this is
+  // a digging-chain step) artists already surfaced higher in the chain. There
+  // is no user library to exclude against in login-less mode.
   const seenIds = new Set<string>([seedTrackId])
   const afterDedupe: typeof verified = []
   let droppedAsDuplicate = 0
   for (const r of verified) {
-    if (
-      library.has(r.v.id) ||
-      seenIds.has(r.v.id) ||
-      chainArtistIds.has(r.v.artistId)
-    ) {
+    if (seenIds.has(r.v.id) || chainArtistIds.has(r.v.artistId)) {
       droppedAsDuplicate++
       continue
     }
@@ -466,6 +325,7 @@ async function verifyAndFilter(
       year: r.v.year,
       spotifyUrl: r.v.spotifyUrl,
       previewUrl: r.v.previewUrl,
+      coverUrl: r.v.coverUrl,
       sonic_link: r.llm.sonic_link,
       link_dimensions: r.llm.link_dimensions,
     })
@@ -485,7 +345,6 @@ async function verifyAndFilter(
 // ---------------------------------------------------------------------------
 
 async function saveCuration(args: {
-  userId: string
   query: string | null
   seedTrackId: string
   parentCurationId: number | null
@@ -496,7 +355,7 @@ async function saveCuration(args: {
     const inserted = await tx
       .insert(curations)
       .values({
-        userId: args.userId,
+        userId: LOCAL_USER,
         query: args.query,
         seedTrackId: args.seedTrackId,
         parentCurationId: args.parentCurationId,
@@ -542,7 +401,6 @@ async function saveCuration(args: {
 const RUN_CURATION_HARD_CAP_MS = 45_000
 
 export async function runCuration(args: {
-  userId: string
   query: string | null
   seed: CurationSeedInput
   parentCurationId?: number | null
@@ -565,7 +423,6 @@ export async function runCuration(args: {
 
 async function runCurationInner(
   args: {
-    userId: string
     query: string | null
     seed: CurationSeedInput
     parentCurationId?: number | null
@@ -576,37 +433,30 @@ async function runCurationInner(
     console.log(`[curate] ${name} ${Date.now() - start}ms`)
 
   try {
+    await ensureLocalUser()
+
     const tSeed = Date.now()
-    const seed = await resolveSeed(args.userId, args.seed)
+    const seed = await resolveSeed(args.seed)
     lap('resolveSeed', tSeed)
     if (!seed) {
-      const code =
-        args.seed.type === 'track_text' ? 'seed_not_found' : 'sync_required'
       return {
         ok: false,
-        code,
-        message:
-          code === 'seed_not_found'
-            ? '시드 곡을 찾지 못했어요.'
-            : '동기화된 데이터가 부족해서 시드를 고를 수 없어요.',
+        code: 'seed_not_found',
+        message: '시드 곡을 찾지 못했어요.',
       }
     }
 
     const tCtx = Date.now()
-    const [library, ctx, chainCtx] = await Promise.all([
-      loadUserLibrary(args.userId),
-      buildSeedContext(args.userId, seed),
+    const [ctx, chainCtx] = await Promise.all([
+      buildSeedContext(seed),
       args.parentCurationId
-        ? collectChainContext({
-            userId: args.userId,
-            parentCurationId: args.parentCurationId,
-          })
+        ? collectChainContext(args.parentCurationId)
         : Promise.resolve({
             chainArtistIds: new Set<string>(),
             ancestorIds: [],
           }),
     ])
-    lap('library+context+chain (parallel)', tCtx)
+    lap('buildSeedContext+chain (parallel)', tCtx)
 
     let llm: KinshipResponse
     const tLlm = Date.now()
@@ -625,9 +475,7 @@ async function runCurationInner(
 
     const tVerify = Date.now()
     const { recs, ...stats } = await verifyAndFilter(
-      args.userId,
       llm,
-      library,
       seed.trackId,
       chainCtx.chainArtistIds
     )
@@ -643,7 +491,6 @@ async function runCurationInner(
 
     const tSave = Date.now()
     const curationId = await saveCuration({
-      userId: args.userId,
       query: args.query,
       seedTrackId: seed.trackId,
       parentCurationId: args.parentCurationId ?? null,
@@ -668,6 +515,7 @@ async function runCurationInner(
         year: r.year,
         spotifyUrl: r.spotifyUrl,
         previewUrl: r.previewUrl,
+        coverUrl: r.coverUrl,
         category: r.category,
         sonic_link: r.sonic_link,
         link_dimensions: r.link_dimensions,
@@ -703,9 +551,3 @@ async function runCurationInner(
     }
   }
 }
-
-// Silence unused-import warnings on reserved helpers.
-void artists
-void tracks
-void isNull
-void inArray

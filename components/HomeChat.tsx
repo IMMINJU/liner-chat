@@ -5,28 +5,32 @@ import { useRef, useState, type FormEvent } from 'react'
 import type { ChatResponse } from '@/app/api/chat/route'
 import { messages as m, pipelineErrorFor } from '@/lib/messages'
 
+// Category render order for the recommendation thumbnails in the summary card.
+// kinship last because it's "the crossing" payoff. Matches the detail page.
+const CATEGORY_ORDER = ['influence', 'peer', 'descendant', 'kinship'] as const
+
 type SeedChip = { label: string; query: string }
 
-// Chips trigger the curation flow. They're worded as plain "추천" requests so
-// the intent classifier doesn't mistake them for a library listing question.
+// Chips pre-fill the input with example seeds. Login-less mode only supports
+// track-seeded curation (no library), so every chip names a concrete song.
 // We deliberately avoid the internal "친족 / kinship" jargon in user-facing
 // copy — the value is what they hear, not how we labeled the category.
 const SEED_CHIPS: SeedChip[] = [
   {
-    label: '요즘 듣는 곡과 비슷한 음악 추천',
-    query: '요즘 자주 듣는 곡과 비슷한 새로운 음악 추천해줘',
+    label: "Tame Impala 'Elephant' 같은 거",
+    query: "Tame Impala Elephant 같은 거 추천해줘",
   },
   {
-    label: '잊고 있던 곡 같은 음악 추천',
-    query: '잊고 있던 좋아한 곡 같은 새로운 음악 추천해줘',
+    label: "The Doors 'L.A. Woman' 같은 거",
+    query: "The Doors L.A. Woman 같은 거 추천해줘",
   },
   {
-    label: '특정 곡 같은 거 추천',
+    label: '직접 곡 적기',
     query: '',
   },
 ]
 
-export function HomeChat({ displayName }: { displayName: string }) {
+export function HomeChat() {
   const [query, setQuery] = useState('')
   const [response, setResponse] = useState<ChatResponse | null>(null)
   const [busy, setBusy] = useState(false)
@@ -68,7 +72,7 @@ export function HomeChat({ displayName }: { displayName: string }) {
         className="mb-8 font-display"
         style={{ fontSize: 'clamp(48px, 6vw, 72px)', lineHeight: '1.1' }}
       >
-        Where do we dig today, {displayName}?
+        Where do we dig today?
       </h1>
 
       <form onSubmit={onSubmit} className="space-y-6">
@@ -144,6 +148,63 @@ export function HomeChat({ displayName }: { displayName: string }) {
               >
                 {response.lineage_notes}
               </blockquote>
+
+              <div className="space-y-6 mb-8">
+                {CATEGORY_ORDER.map((cat) => {
+                  const items = response.categories[cat]
+                  if (!items || items.length === 0) return null
+                  return (
+                    <div key={cat} className="space-y-2">
+                      <div className="font-mono uppercase tracking-widest text-[10px] text-[color:var(--muted-foreground)]">
+                        {m.curation.categories[cat]}
+                      </div>
+                      <div className="space-y-2">
+                        {items.map((t) => (
+                          <div key={t.id} className="flex items-center gap-3">
+                            {t.coverUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={t.coverUrl}
+                                alt=""
+                                width={44}
+                                height={44}
+                                loading="lazy"
+                                className="shrink-0 block"
+                                style={{
+                                  width: 44,
+                                  height: 44,
+                                  objectFit: 'cover',
+                                }}
+                              />
+                            ) : (
+                              <div
+                                className="shrink-0"
+                                style={{
+                                  width: 44,
+                                  height: 44,
+                                  background: 'rgba(244,239,230,0.05)',
+                                }}
+                              />
+                            )}
+                            <div className="flex items-baseline gap-3 min-w-0">
+                              <span
+                                className="font-serif truncate"
+                                style={{ fontSize: '16px' }}
+                              >
+                                {t.name}
+                              </span>
+                              <span className="font-mono text-xs text-[color:var(--muted-foreground)] truncate">
+                                {t.artist}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
               <Link
                 href={`/curations/${response.curationId}`}
                 className="font-mono text-sm hover:text-[color:var(--accent)] transition-colors"
@@ -198,78 +259,6 @@ export function HomeChat({ displayName }: { displayName: string }) {
                 )
               })()
             : null}
-
-          {response.kind === 'library_filter' ? (
-            <div className="space-y-6">
-              <div className="flex items-baseline gap-4 flex-wrap">
-                <span
-                  className="font-serif italic"
-                  style={{ fontSize: '18px' }}
-                >
-                  내 라이브러리 · {response.genres.join(', ')}
-                </span>
-                <span className="font-mono text-xs text-[color:var(--muted-foreground)]">
-                  {m.library.countSummary(
-                    response.count,
-                    response.tracks.length,
-                    response.computed
-                  )}
-                </span>
-              </div>
-
-              {response.notice ? (
-                <div className="font-mono text-xs text-[color:var(--muted-foreground)]">
-                  {response.notice}
-                </div>
-              ) : null}
-
-              {response.tracks.length === 0 ? (
-                <div className="font-serif italic text-[color:var(--muted-foreground)]">
-                  {m.library.empty(response.genres)}
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {response.tracks.map((t) => (
-                    <div
-                      key={t.id}
-                      className="p-4 bg-[color:var(--card)] rounded border border-[color:var(--border)] space-y-2"
-                    >
-                      <div
-                        className="font-serif leading-tight"
-                        style={{ fontSize: '18px' }}
-                      >
-                        {t.name}
-                      </div>
-                      <div className="font-mono text-xs uppercase tracking-wider text-[color:var(--muted-foreground)]">
-                        {t.artist}
-                      </div>
-                      <div className="font-mono text-xs text-[color:var(--muted-foreground)]">
-                        {t.album ?? '—'}
-                        {t.year ? ` · ${t.year}` : ''}
-                      </div>
-                      {t.spotifyUrl ? (
-                        <a
-                          href={t.spotifyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-mono text-xs text-[color:var(--foreground)] hover:text-[color:var(--accent)] transition-colors inline-block"
-                          style={{ color: 'var(--spotify-green)' }}
-                        >
-                          Open in Spotify ↗
-                        </a>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : null}
-
-          {response.kind === 'list_top' ? (
-            <div className="font-mono text-sm text-[color:var(--muted-foreground)]">
-              {response.notice}
-            </div>
-          ) : null}
 
           {response.kind === 'small_talk' ? (
             <div className="font-korean-sans text-sm text-[color:var(--muted-foreground)]">

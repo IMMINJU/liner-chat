@@ -4,7 +4,7 @@ import {
   SpotifyRateLimitError,
   SpotifyServerError,
 } from './errors'
-import { forceRefreshAccessToken, getValidAccessToken } from './tokens'
+import { getAppAccessToken, invalidateAppToken } from './tokens'
 
 const API_BASE = 'https://api.spotify.com'
 
@@ -25,16 +25,18 @@ export type SpotifyFetchInit = RequestInit & {
 }
 
 /**
- * Authenticated fetch against the Spotify Web API.
+ * Authenticated fetch against the Spotify Web API using an app-level
+ * (Client Credentials) token. Login-less: there is no per-user token, so this
+ * only reaches public catalog endpoints (search / tracks / artists).
  *
- * - Auto-refreshes the access token if expired or on a 401.
+ * - Mints/refreshes the app token transparently.
+ * - On a 401, drops the cached token and retries once.
  * - Honors Retry-After on 429 (single retry).
  * - Throws typed errors for callers to differentiate.
  *
  * Returns the parsed JSON body, or `null` for 204 / allow404.
  */
 export async function spotifyFetch<T = unknown>(
-  userId: string,
   path: string,
   init: SpotifyFetchInit = {}
 ): Promise<T | null> {
@@ -53,14 +55,16 @@ export async function spotifyFetch<T = unknown>(
     return fetch(url, { ...init, headers, signal })
   }
 
-  let accessToken = await getValidAccessToken(userId)
+  let accessToken = await getAppAccessToken()
   let res = await doRequest(accessToken)
 
   if (res.status === 401) {
-    accessToken = await forceRefreshAccessToken(userId)
+    // App token unexpectedly rejected — drop the cache and mint a fresh one.
+    invalidateAppToken()
+    accessToken = await getAppAccessToken()
     res = await doRequest(accessToken)
     if (res.status === 401) {
-      throw new SpotifyAuthError('Access token still invalid after refresh')
+      throw new SpotifyAuthError('App token still invalid after refresh')
     }
   }
 

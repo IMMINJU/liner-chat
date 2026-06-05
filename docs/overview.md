@@ -53,19 +53,19 @@ LLM이 영향원/동료/후속/**친족(kinship)** 카테고리로 트랙 추천
 - **Next.js 16.2.6** App Router + TypeScript + Tailwind 4
 - **Neon Postgres + Drizzle ORM** (`@neondatabase/serverless`, `drizzle-orm/neon-http`)
 - **Anthropic SDK** — `claude-haiku-4-5` (의도), `claude-sonnet-4-6` (친족 추천), tool use로 응답 강제
-- **Spotify Web API** — Auth Code + PKCE, Search/Audio Features/Artist/Playlist
-- **Last.fm API** — 모드 1 장르 분류 보조
-- **iron-session** — 쿠키 기반 세션
+- **Spotify Web API** — **Client Credentials(앱 토큰)** 전용. Search/Track/Artist 같은 공개 카탈로그 읽기만. 로그인/사용자 토큰 없음. (`docs/auth-flow.md` 참조)
+- **Last.fm API** — 시드 컨텍스트의 트랙/아티스트 태그 보조
 - **zod** — 모든 외부/LLM 응답 검증
+
+## 로그인 없는 단일 사용자 모드
+
+이 앱은 **Spotify 로그인이 없다.** 모든 큐레이션은 고정 익명 사용자(`LOCAL_USER`)가 소유하고, Spotify 호출은 앱 자체 토큰(Client Credentials)으로 공개 카탈로그만 읽는다. 그 결과 라이브러리 동기화·모드 1·플레이리스트 저장·라이브러리 기반 중복 제외는 제거됐다. 자세한 내역은 `docs/auth-flow.md`.
 
 ## MVP 범위
 
-- Spotify 로그인 (PKCE)
-- 동기화: liked + top(3 time_range) + recently-played(50) + audio features
-- 모드 1: 자연어 장르 필터 답변
-- 모드 2: 단일 시드 → 4 카테고리 추천 → 프리뷰 페이지
-- 디깅 체인: 추천 카드에서 새 시드로 분기
-- Spotify에 플레이리스트로 저장
+- 모드 2: 단일 시드(곡 이름/`track_text`) → Sonnet 4 카테고리 추천 → Spotify 검증 → 디테일 페이지
+- 디깅 체인: 추천 카드에서 새 시드로 분기 (`parent_curation_id` + 체인 아티스트 중복 제외)
+- 미리듣기: 추천 카드의 `open.spotify.com/embed` 플레이어 (로그인 불필요)
 
 ## 향후 (v2+)
 

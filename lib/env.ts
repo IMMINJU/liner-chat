@@ -11,21 +11,11 @@ function required(key: string): string {
 export const env = {
   databaseUrl: () => required('DATABASE_URL'),
   spotify: {
+    // Login-less: only the Client Credentials flow is used, which needs just
+    // the app's id/secret. No redirect URI, no user scopes.
     clientId: () => required('SPOTIFY_CLIENT_ID'),
     clientSecret: () => required('SPOTIFY_CLIENT_SECRET'),
-    redirectUri: () => required('SPOTIFY_REDIRECT_URI'),
   },
-  sessionSecret: () => required('SESSION_SECRET'),
   lastfmApiKey: () => required('LASTFM_API_KEY'),
   anthropicApiKey: () => required('ANTHROPIC_API_KEY'),
 }
-
-export const SPOTIFY_SCOPES = [
-  'user-read-recently-played',
-  'user-top-read',
-  'user-library-read',
-  'playlist-modify-private',
-  'playlist-modify-public',
-  'user-read-email',
-  'user-read-private',
-].join(' ')

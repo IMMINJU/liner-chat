@@ -1,23 +1,15 @@
 import { and, asc, eq } from 'drizzle-orm'
 import Link from 'next/link'
-import { notFound, redirect } from 'next/navigation'
+import { notFound } from 'next/navigation'
 import { db } from '@/db/client'
-import {
-  artists,
-  curationPlaylists,
-  curationTracks,
-  curations,
-  tracks,
-} from '@/db/schema'
+import { artists, curationTracks, curations, tracks } from '@/db/schema'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { DiggingProvider } from '@/components/DiggingProvider'
-import { SavePlaylistButton } from '@/components/SavePlaylistButton'
 import { TrackCard } from '@/components/TrackCard'
 import { compressForBreadcrumb, loadAncestry } from '@/lib/ancestry'
 import { formatAbsKst } from '@/lib/format'
 import { messages as m } from '@/lib/messages'
-import { getUserSession } from '@/lib/session'
-import { playlistUrl } from '@/lib/spotify/playlist'
+import { LOCAL_USER } from '@/lib/localUser'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,9 +54,6 @@ export default async function CurationDetailPage({
 }: {
   params: Promise<{ id: string }>
 }) {
-  const session = await getUserSession()
-  if (!session) redirect('/')
-
   const { id: rawId } = await params
   const id = Number(rawId)
   if (!Number.isFinite(id)) notFound()
@@ -72,12 +61,12 @@ export default async function CurationDetailPage({
   const head = await db
     .select()
     .from(curations)
-    .where(and(eq(curations.id, id), eq(curations.userId, session.userId)))
+    .where(and(eq(curations.id, id), eq(curations.userId, LOCAL_USER)))
     .limit(1)
   const curation = head[0]
   if (!curation) notFound()
 
-  const [seedRowsP, recRowsP, ancestorsP, savedRowsP] = await Promise.all([
+  const [seedRowsP, recRowsP, ancestorsP] = await Promise.all([
     db
       .select({
         id: tracks.id,
@@ -112,18 +101,10 @@ export default async function CurationDetailPage({
       .innerJoin(artists, eq(tracks.artistId, artists.id))
       .where(eq(curationTracks.curationId, id))
       .orderBy(asc(curationTracks.position)),
-    loadAncestry(id, session.userId),
-    db
-      .select({ playlistId: curationPlaylists.spotifyPlaylistId })
-      .from(curationPlaylists)
-      .where(eq(curationPlaylists.curationId, id))
-      .limit(1),
+    loadAncestry(id, LOCAL_USER),
   ])
   const seed = seedRowsP[0]
   const recRows: RecRow[] = recRowsP
-  const initialSaved = savedRowsP[0]
-    ? { spotifyUrl: playlistUrl(savedRowsP[0].playlistId) }
-    : null
 
   const grouped: Record<CategoryKey, RecRow[]> = {
     influence: [],
@@ -147,7 +128,6 @@ export default async function CurationDetailPage({
         >
           ← {m.app.title}
         </Link>
-        <SavePlaylistButton curationId={id} initialSaved={initialSaved} />
       </div>
 
       <Breadcrumb
