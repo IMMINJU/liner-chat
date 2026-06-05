@@ -59,6 +59,17 @@ export const KinshipResponseSchema = z
 export type KinshipResponse = z.infer<typeof KinshipResponseSchema>
 export type TrackRec = z.infer<typeof TrackRecSchema>
 
+// Supplement responses (the verify-gap retry in the curator) only need to
+// refill specific categories that went empty *after* Spotify verification.
+// They must NOT carry the per-category floor of KinshipResponseSchema — a
+// supplement that returns "2 more influence tracks" is legitimately allowed
+// to have zero peers/kinship. lineage_notes is dropped too: the original
+// curation already has one, and we don't overwrite it.
+export const KinshipSupplementSchema = z.object({
+  tracks: z.array(TrackRecSchema).min(1),
+})
+export type KinshipSupplement = z.infer<typeof KinshipSupplementSchema>
+
 export type SeedContext = {
   track: { name: string; artist: string; album: string; year: number }
   spotifyGenres: string[]
@@ -92,7 +103,7 @@ const SYSTEM_PROMPT = `너는 음악 평론가이자 큐레이터다. 사용자�
 그리고 시드가 "일관형"인지 "여정형"인지 스스로 판단한 뒤 추천 전략을 바꾼다:
 
 - 일관형 시드 (Placebo처럼 곡 전체가 한 정조) → 추천곡도 그 정조를 곡 전체에 두른 곡을 골라라. "밝게 시작해 어두워지는" 식으로 부분적으로만 시드의 색에 닿는 곡은 피한다. 큐레이션 전체가 하나의 일관된 방이 되도록.
-- 여정형 시드 (L.A. Woman처럼 전환·여정이 있는 곡) → 전체 정조보다 sonic moment의 가로지름을 우선한다. 시대·장르를 넘는 친족을 적극 찾아라.
+- 여정형 시드 (L.A. Woman처럼 전환·여정이 있는 곡) → 전체 정조보다 sonic moment의 가로지름을 우선한다. 시대·장르를 넘는 친족을 적극 찾아라. 단 추천곡을 시드 한 점에 각각 매달지 말고, 추천곡들이 서로 이어지는 하나의 여정(아크)을 이루도록 배치하라: 한 곡의 sonic moment가 다음 곡으로 자연스럽게 넘어가고, 그 사이에 시대·장르를 잇는 경첩(hinge) 곡을 의식적으로 둬라. 예컨대 미국 블루스-부기에서 출발해 비틀즈류를 경첩 삼아 브리티시 기타팝으로 이동하는 식 — 시드를 따라 디깅 체인을 타고 내려가는 느낌이 들도록. 그리고 연결축을 보컬/내러티브 한 종류로만 수렴시키지 마라: 같은 큐레이션 안에 groove·texture(예: 클린톤으로 구르는 기타 부기, 셔플 그루브) 같은 비-보컬 축으로 묶이는 친족을 반드시 일부 섞어, 발견의 폭을 넓혀라.
 
 이 판단을 lineage_notes 첫머리에 한 줄로 밝혀라.
 
@@ -110,6 +121,8 @@ const SYSTEM_PROMPT = `너는 음악 평론가이자 큐레이터다. 사용자�
    - Tame Impala "Elephant" (2012, 호주, 사이키 록) ↔ John Lennon "Well Well Well" (1970, 영국, 록) — 거친 보컬·헤비 디스토션·펑크적 폭발
    - Sex Pistols "God Save the Queen" (1977, 영국, 펑크) ↔ The Beatles "Birthday" (1968, 영국, 록앤롤) — 중간부 펑크 폭발 그루브
    - The Doors "L.A. Woman" (1971, 미국, 사이키/블루스 록) ↔ Dire Straits "Sultans of Swing" (1978, 영국, 록 컨트리 포크) — 롱폼 어쿠스틱 그루브·내러티브 보컬·도시 풍경
+   - The Doors "L.A. Woman" ↔ ZZ Top "La Grange" (1973, 미국, 블루스 록) — 클린톤으로 굴러가는 텍사스/존 리 후커 부기 셔플 그루브 (vocal_style이 아니라 groove·texture로 통하는 친족)
+   - The Doors "L.A. Woman"의 부기 그루브 ↔ The Beatles "Old Brown Shoe" (1969, 영국, 록) → Oasis "She's Electric" (1995, 영국, 브릿팝) — 기타 훅으로 휘청이며 전진하는 그루브가 미국 블루스록에서 브리티시 기타팝으로 이동하는 경첩 (비틀즈가 두 진영의 다리)
    - Dire Straits "Sultans of Swing" ↔ Bob Dylan "Things Have Changed" (2000, 미국, 포크 록) — 블루지 톤·읊조리는 창법·내러티브
 
 5. 창법(vocal_style)은 가장 강력한 친족 신호 중 하나다. Jim Morrison · Mark Knopfler · Bob Dylan처럼 노래를 '부른다'기보다 읊조리거나 내뱉는 보컬은 시대·장르·국적을 가로지르는 연결고리다. 보컬 톤·억양·화법을 적극 활용하라.
@@ -259,6 +272,101 @@ export class KinshipLLMError extends Error {
 // so if even the signal is dropped, we still throw before the platform does.
 const SONNET_CALL_TIMEOUT_MS = 35_000
 
+// The verify-gap supplement (curator.ts) is a *second* Sonnet call inside the
+// same curation. The outer curator hard cap is 45s, and the first call already
+// ate up to 35s, so the supplement gets a tighter budget: it must finish in
+// the remaining headroom or be abandoned (the curation still ships with the
+// first call's verified tracks). Lower max_tokens too — it only refills one or
+// two categories, not a full 7-track curation.
+const SONNET_SUPPLEMENT_TIMEOUT_MS = 18_000
+const SONNET_SUPPLEMENT_MAX_TOKENS = 1_200
+
+/**
+ * Shared Sonnet invocation: forces the submit_kinship_curation tool, races the
+ * SDK call against a manual timeout (the SDK has dropped abort signals on some
+ * Vercel runtimes), and returns the raw tool-use input for the caller to parse
+ * against whichever schema fits. Throws KinshipLLMError on timeout / no
+ * tool_use.
+ */
+async function callSonnet(args: {
+  userContent: string
+  timeoutMs: number
+  maxTokens: number
+  tag: string
+}): Promise<unknown> {
+  const { userContent, timeoutMs, maxTokens, tag } = args
+  const tStart = Date.now()
+  const controller = new AbortController()
+  const timeoutId = setTimeout(
+    () => controller.abort(new Error('local timeout')),
+    timeoutMs
+  )
+
+  let resp
+  try {
+    const apiCall = anthropic().messages.create(
+      {
+        model: MODELS.kinship,
+        // 2000 covers ~7 tracks of (artist+track+album+year+short sonic_link+
+        // link_dimensions) plus a 3-line lineage_notes. The "shorter
+        // sonic_link" rule in the system prompt does most of the work — this
+        // is the hard cap that backs it. Supplement calls pass a lower value.
+        max_tokens: maxTokens,
+        // 0.6 is the sweet spot for this product: low enough that song titles
+        // and artists don't drift into hallucination (which would get dropped
+        // by Spotify verify and force a retry, costing us wall-clock), high
+        // enough that the kinship category keeps surfacing the non-obvious
+        // cross-genre picks that justify the whole product. We briefly tried
+        // 0.4 thinking it would shave time — no measurable effect, just safer
+        // recs.
+        temperature: 0.6,
+        system: SYSTEM_PROMPT,
+        tools: [KINSHIP_TOOL],
+        tool_choice: { type: 'tool', name: KINSHIP_TOOL.name },
+        messages: [{ role: 'user', content: userContent }],
+      },
+      { signal: controller.signal }
+    )
+
+    // Backstop race: if the SDK swallows the abort signal for any reason
+    // (it has in the past on some Vercel runtimes), this still throws and
+    // lets the caller turn it into an `llm_failed` / abandon the supplement.
+    const localTimeout = new Promise<never>((_, reject) => {
+      setTimeout(
+        () =>
+          reject(
+            new KinshipLLMError(
+              `Sonnet call exceeded ${timeoutMs}ms (local race)`
+            )
+          ),
+        timeoutMs + 1_000
+      )
+    })
+
+    resp = await Promise.race([apiCall, localTimeout])
+    console.log(`[kinship] sonnet ${tag} ${Date.now() - tStart}ms`)
+  } catch (err) {
+    console.log(
+      `[kinship] sonnet ${tag} FAILED after ${Date.now() - tStart}ms: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+    if (err instanceof KinshipLLMError) throw err
+    throw new KinshipLLMError(
+      `Sonnet call failed: ${err instanceof Error ? err.message : String(err)}`,
+      err
+    )
+  } finally {
+    clearTimeout(timeoutId)
+  }
+
+  const toolUse = resp.content.find((b) => b.type === 'tool_use')
+  if (!toolUse || toolUse.type !== 'tool_use') {
+    throw new KinshipLLMError('Sonnet이 tool을 호출하지 않았습니다.')
+  }
+  return toolUse.input
+}
+
 /**
  * Call Sonnet with the seed context. Forces the submit_kinship_curation tool.
  * Validates with zod; on validation failure, retries once with feedback.
@@ -269,85 +377,15 @@ export async function recommendKinship(
   const userMessage = renderUserMessage(ctx)
 
   async function callOnce(extraNote?: string): Promise<KinshipResponse> {
-    const tStart = Date.now()
-    const controller = new AbortController()
-    const timeoutId = setTimeout(
-      () => controller.abort(new Error('local timeout')),
-      SONNET_CALL_TIMEOUT_MS
-    )
-
-    let resp
-    try {
-      const apiCall = anthropic().messages.create(
-        {
-          model: MODELS.kinship,
-          // Second budget cut after 3000 was still letting Sonnet write
-          // past the 35s SDK timeout. 2000 covers ~7 tracks of
-          // (artist+track+album+year+short sonic_link+link_dimensions)
-          // plus a 3-line lineage_notes. The "shorter sonic_link" rule
-          // in the system prompt does most of the work — this is the
-          // hard cap that backs it.
-          max_tokens: 2000,
-          // 0.6 is the sweet spot for this product: low enough that song
-          // titles and artists don't drift into hallucination (which would
-          // get dropped by Spotify verify and force a retry, costing us
-          // wall-clock), high enough that the kinship category keeps
-          // surfacing the non-obvious cross-genre picks that justify the
-          // whole product. We briefly tried 0.4 thinking it would shave
-          // time — no measurable effect, just safer recs.
-          temperature: 0.6,
-          system: SYSTEM_PROMPT,
-          tools: [KINSHIP_TOOL],
-          tool_choice: { type: 'tool', name: KINSHIP_TOOL.name },
-          messages: [
-            {
-              role: 'user',
-              content: extraNote
-                ? `${userMessage}\n\n[재시도 메모: ${extraNote}]`
-                : userMessage,
-            },
-          ],
-        },
-        { signal: controller.signal }
-      )
-
-      // Backstop race: if the SDK swallows the abort signal for any reason
-      // (it has in the past on some Vercel runtimes), this still throws and
-      // lets the curator's catch turn it into an `llm_failed`.
-      const localTimeout = new Promise<never>((_, reject) => {
-        setTimeout(
-          () =>
-            reject(
-              new KinshipLLMError(
-                `Sonnet call exceeded ${SONNET_CALL_TIMEOUT_MS}ms (local race)`
-              )
-            ),
-          SONNET_CALL_TIMEOUT_MS + 1_000
-        )
-      })
-
-      resp = await Promise.race([apiCall, localTimeout])
-      console.log(`[kinship] sonnet call ${Date.now() - tStart}ms`)
-    } catch (err) {
-      console.log(
-        `[kinship] sonnet FAILED after ${Date.now() - tStart}ms: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      )
-      if (err instanceof KinshipLLMError) throw err
-      throw new KinshipLLMError(
-        `Sonnet call failed: ${err instanceof Error ? err.message : String(err)}`,
-        err
-      )
-    } finally {
-      clearTimeout(timeoutId)
-    }
-
-    const toolUse = resp.content.find((b) => b.type === 'tool_use')
-    if (!toolUse || toolUse.type !== 'tool_use') {
-      throw new KinshipLLMError('Sonnet이 tool을 호출하지 않았습니다.')
-    }
-    const parsed = KinshipResponseSchema.safeParse(toolUse.input)
+    const input = await callSonnet({
+      userContent: extraNote
+        ? `${userMessage}\n\n[재시도 메모: ${extraNote}]`
+        : userMessage,
+      timeoutMs: SONNET_CALL_TIMEOUT_MS,
+      maxTokens: 2000,
+      tag: 'curate',
+    })
+    const parsed = KinshipResponseSchema.safeParse(input)
     if (!parsed.success) {
       throw new KinshipLLMError(
         'Sonnet 응답이 스키마를 만족하지 못함',
@@ -365,5 +403,71 @@ export async function recommendKinship(
       return await callOnce(err.message)
     }
     throw err
+  }
+}
+
+/**
+ * Verify-gap supplement: after the curator runs Spotify verification, some
+ * categories can end up empty even though the original response satisfied the
+ * zod floor (the LLM's picks for that category all failed verify — e.g. a
+ * single-only track whose album/year can't be matched). This asks Sonnet to
+ * refill ONLY the deficient categories, steering it toward verify-friendly
+ * picks (tracks on a proper studio album) and away from anything it already
+ * proposed.
+ *
+ * Best-effort: on any failure (timeout, no tool_use, schema miss) it returns an
+ * empty track list so the curation still ships with whatever the first call
+ * verified. Never throws.
+ */
+export async function supplementKinship(args: {
+  ctx: SeedContext
+  // category → how many more verified tracks we'd like (a soft target)
+  deficits: { category: Category; want: number }[]
+  // (artist, track) pairs already proposed — don't repeat these
+  avoid: { artist: string; track: string }[]
+}): Promise<KinshipSupplement> {
+  const { ctx, deficits, avoid } = args
+  if (deficits.length === 0) return { tracks: [] }
+
+  const deficitLines = deficits
+    .map((d) => `- ${d.category}: ${d.want}곡 더`)
+    .join('\n')
+  const avoidLines = avoid
+    .slice(0, 40)
+    .map((a) => `- ${a.artist} — ${a.track}`)
+    .join('\n')
+
+  const userContent = [
+    renderUserMessage(ctx),
+    ``,
+    `[보충 요청] 위 시드에 대한 1차 추천 중 일부 카테고리가 Spotify 검증에서 탈락해 비었다. 아래 카테고리만 추가로 채워라:`,
+    deficitLines,
+    ``,
+    `반드시 지켜라:`,
+    `- 위에 나열된 카테고리의 곡만 제출한다. 다른 카테고리는 비워도 된다.`,
+    `- 검증 친화적인 곡을 골라라: 컴필레이션/베스트앨범/싱글 표기 대신, 그 곡이 처음 실린 정규 스튜디오 앨범명과 발매연도를 정확히 적어라. 검증은 artist 정확매치 + album 부분일치 + 발매연도 ±2로 이뤄진다.`,
+    `- 아래 곡들은 1차에서 이미 제안됐으니 반복하지 마라:`,
+    avoidLines || '- (없음)',
+  ].join('\n')
+
+  try {
+    const input = await callSonnet({
+      userContent,
+      timeoutMs: SONNET_SUPPLEMENT_TIMEOUT_MS,
+      maxTokens: SONNET_SUPPLEMENT_MAX_TOKENS,
+      tag: 'supplement',
+    })
+    const parsed = KinshipSupplementSchema.safeParse(input)
+    if (!parsed.success) {
+      console.log('[kinship] supplement schema miss — shipping without it')
+      return { tracks: [] }
+    }
+    // Keep only the categories we actually asked for; Sonnet sometimes throws
+    // in an extra kinship pick "for free" which would skew the curation.
+    const wanted = new Set(deficits.map((d) => d.category))
+    return { tracks: parsed.data.tracks.filter((t) => wanted.has(t.category)) }
+  } catch {
+    console.log('[kinship] supplement failed — shipping without it')
+    return { tracks: [] }
   }
 }

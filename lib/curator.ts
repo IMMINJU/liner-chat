@@ -5,9 +5,11 @@ import { getArtistTopTags, getTrackTopTags } from './lastfm'
 import { LOCAL_USER, ensureLocalUser } from './localUser'
 import {
   recommendKinship,
+  supplementKinship,
   type Category,
   type KinshipResponse,
   type SeedContext,
+  type TrackRec,
 } from './kinship'
 import {
   getArtist,
@@ -254,20 +256,45 @@ async function collectChainContext(
   return { chainArtistIds, ancestorIds: curationIds }
 }
 
-async function verifyAndFilter(
-  llm: KinshipResponse,
-  seedTrackId: string,
+// Mutable accumulator threaded through verify passes so a follow-up supplement
+// pass dedupes/diversifies against everything the first pass already accepted.
+type FilterState = {
+  seenIds: Set<string>
+  perCategoryArtist: Map<string, Set<string>>
+  overallArtistCount: Map<string, number>
+}
+
+function newFilterState(seedTrackId: string): FilterState {
+  return {
+    seenIds: new Set<string>([seedTrackId]),
+    perCategoryArtist: new Map(),
+    overallArtistCount: new Map(),
+  }
+}
+
+/**
+ * Verify a batch of LLM track recs against Spotify, then dedupe + diversify
+ * against the shared `state` (which accumulates across passes). Returns the
+ * accepted recs and per-pass stats. `state` is mutated in place.
+ *
+ * Dedupe drops: the seed itself, anything already accepted this curation, a
+ * track the LLM proposed twice, and (on a digging-chain step) artists already
+ * surfaced higher in the chain. Diversity caps: 1 per artist per category,
+ * 2 per artist overall. No user library to exclude against in login-less mode.
+ */
+async function verifyBatch(
+  recs: TrackRec[],
+  state: FilterState,
   chainArtistIds: Set<string>
 ): Promise<{
-  recs: RecWithVerified[]
-  proposedByLLM: number
-  verifiedOnSpotify: number
+  accepted: RecWithVerified[]
+  proposed: number
+  verified: number
   droppedAsDuplicate: number
   droppedByDiversity: number
 }> {
-  // Run verifyTrack in parallel.
   const verifiedResults = await Promise.all(
-    llm.tracks.map(async (t) => {
+    recs.map(async (t) => {
       const v = await verifyTrack({
         artist: t.artist,
         track: t.track,
@@ -278,44 +305,31 @@ async function verifyAndFilter(
     })
   )
   const verified = verifiedResults.filter(
-    (r): r is { llm: (typeof llm.tracks)[number]; v: VerifiedTrack } =>
-      r !== null
+    (r): r is { llm: TrackRec; v: VerifiedTrack } => r !== null
   )
 
-  // Dedupe vs seed itself, any track the LLM proposed twice, and (when this is
-  // a digging-chain step) artists already surfaced higher in the chain. There
-  // is no user library to exclude against in login-less mode.
-  const seenIds = new Set<string>([seedTrackId])
-  const afterDedupe: typeof verified = []
+  const accepted: RecWithVerified[] = []
   let droppedAsDuplicate = 0
+  let droppedByDiversity = 0
+
   for (const r of verified) {
-    if (seenIds.has(r.v.id) || chainArtistIds.has(r.v.artistId)) {
+    if (state.seenIds.has(r.v.id) || chainArtistIds.has(r.v.artistId)) {
       droppedAsDuplicate++
       continue
     }
-    seenIds.add(r.v.id)
-    afterDedupe.push(r)
-  }
-
-  // Diversity: per-category 1 per artist, overall 2 per artist max.
-  const perCategoryArtist = new Map<string, Set<string>>()
-  const overallArtistCount = new Map<string, number>()
-  const final: RecWithVerified[] = []
-  let droppedByDiversity = 0
-
-  for (const r of afterDedupe) {
     const cat = r.llm.category
     const artistId = r.v.artistId
-    const inCat = perCategoryArtist.get(cat) ?? new Set<string>()
-    const overall = overallArtistCount.get(artistId) ?? 0
+    const inCat = state.perCategoryArtist.get(cat) ?? new Set<string>()
+    const overall = state.overallArtistCount.get(artistId) ?? 0
     if (inCat.has(artistId) || overall >= 2) {
       droppedByDiversity++
       continue
     }
+    state.seenIds.add(r.v.id)
     inCat.add(artistId)
-    perCategoryArtist.set(cat, inCat)
-    overallArtistCount.set(artistId, overall + 1)
-    final.push({
+    state.perCategoryArtist.set(cat, inCat)
+    state.overallArtistCount.set(artistId, overall + 1)
+    accepted.push({
       category: cat,
       artistId,
       artistName: r.v.artistName,
@@ -332,12 +346,105 @@ async function verifyAndFilter(
   }
 
   return {
-    recs: final,
-    proposedByLLM: llm.tracks.length,
-    verifiedOnSpotify: verified.length,
+    accepted,
+    proposed: recs.length,
+    verified: verified.length,
     droppedAsDuplicate,
     droppedByDiversity,
   }
+}
+
+// Categories that hurt most when verify empties them: influence anchors the
+// lineage and kinship is the whole product. If either lands zero verified
+// tracks we spend one extra Sonnet call trying to refill it. peer/descendant
+// going thin is tolerated (they already have low floors) and not worth a
+// second round-trip against the curator's 45s hard cap.
+const SUPPLEMENT_TARGET_CATEGORIES: { category: Category; want: number }[] = [
+  { category: 'influence', want: 2 },
+  { category: 'kinship', want: 2 },
+]
+
+/**
+ * Run first-pass verify, then — if a high-value category came back empty —
+ * one supplement Sonnet call to refill it, re-verified against the same state.
+ * The supplement is best-effort: if it times out or finds nothing, we ship the
+ * first-pass result. Returns the merged recs + combined stats.
+ */
+// Headroom the supplement pass needs before the curator hard cap (45s): its
+// own 18s Sonnet budget + ~5s to re-verify the returned tracks on Spotify. If
+// less than this remains we skip the supplement and ship the first pass — a
+// curation missing one category beats a 504 that loses everything.
+const SUPPLEMENT_MIN_HEADROOM_MS = 23_000
+
+async function verifyAndFilter(
+  llm: KinshipResponse,
+  ctx: SeedContext,
+  seedTrackId: string,
+  chainArtistIds: Set<string>,
+  deadlineMs: number
+): Promise<{
+  recs: RecWithVerified[]
+  proposedByLLM: number
+  verifiedOnSpotify: number
+  droppedAsDuplicate: number
+  droppedByDiversity: number
+  supplemented: boolean
+}> {
+  const state = newFilterState(seedTrackId)
+  const first = await verifyBatch(llm.tracks, state, chainArtistIds)
+  const recs = [...first.accepted]
+  const stats = {
+    proposedByLLM: first.proposed,
+    verifiedOnSpotify: first.verified,
+    droppedAsDuplicate: first.droppedAsDuplicate,
+    droppedByDiversity: first.droppedByDiversity,
+    supplemented: false,
+  }
+
+  // Which high-value categories ended up empty after verify?
+  const countByCat = (cat: Category) =>
+    recs.filter((r) => r.category === cat).length
+  const deficits = SUPPLEMENT_TARGET_CATEGORIES.filter(
+    (t) => countByCat(t.category) === 0
+  )
+  if (deficits.length === 0) {
+    return { recs, ...stats }
+  }
+
+  // Only spend the second Sonnet call if there's headroom before the hard cap.
+  const remaining = deadlineMs - Date.now()
+  if (remaining < SUPPLEMENT_MIN_HEADROOM_MS) {
+    console.log(
+      `[curate] verify-gap: ${deficits
+        .map((d) => d.category)
+        .join('+')} empty but only ${remaining}ms left — skipping supplement`
+    )
+    return { recs, ...stats }
+  }
+  console.log(
+    `[curate] verify-gap: ${deficits
+      .map((d) => d.category)
+      .join('+')} empty — supplementing`
+  )
+
+  const supplement = await supplementKinship({
+    ctx,
+    deficits,
+    avoid: llm.tracks.map((t) => ({ artist: t.artist, track: t.track })),
+  })
+  if (supplement.tracks.length === 0) {
+    return { recs, ...stats }
+  }
+
+  const second = await verifyBatch(supplement.tracks, state, chainArtistIds)
+  recs.push(...second.accepted)
+  stats.proposedByLLM += second.proposed
+  stats.verifiedOnSpotify += second.verified
+  stats.droppedAsDuplicate += second.droppedAsDuplicate
+  stats.droppedByDiversity += second.droppedByDiversity
+  stats.supplemented = second.accepted.length > 0
+
+  return { recs, ...stats }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,12 +581,15 @@ async function runCurationInner(
     }
 
     const tVerify = Date.now()
-    const { recs, ...stats } = await verifyAndFilter(
+    const { recs, supplemented, ...stats } = await verifyAndFilter(
       llm,
+      ctx,
       seed.trackId,
-      chainCtx.chainArtistIds
+      chainCtx.chainArtistIds,
+      t0 + RUN_CURATION_HARD_CAP_MS
     )
     lap('verifyAndFilter', tVerify)
+    if (supplemented) console.log('[curate] supplement added tracks')
 
     if (recs.length === 0) {
       return {

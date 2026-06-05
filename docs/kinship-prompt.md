@@ -21,7 +21,7 @@
 > 그리고 **시드가 "일관형"인지 "여정형"인지 스스로 판단**한 뒤 추천 전략을 바꾼다:
 >
 > - **일관형 시드** (Placebo처럼 곡 전체가 한 정조) → 추천곡도 **그 정조를 곡 전체에 두른 곡**을 골라라. "밝게 시작해 어두워지는" 식으로 **부분적으로만** 시드의 색에 닿는 곡은 피한다. 큐레이션 전체가 하나의 일관된 방이 되도록.
-> - **여정형 시드** (L.A. Woman처럼 전환·여정이 있는 곡) → 전체 정조보다 **sonic moment의 가로지름**을 우선한다. 시대·장르를 넘는 친족을 적극 찾아라.
+> - **여정형 시드** (L.A. Woman처럼 전환·여정이 있는 곡) → 전체 정조보다 **sonic moment의 가로지름**을 우선한다. 시대·장르를 넘는 친족을 적극 찾아라. 단 추천곡을 시드 한 점에 각각 매달지 말고, **추천곡들이 서로 이어지는 하나의 여정(아크)**을 이루도록 배치하라: 한 곡의 sonic moment가 다음 곡으로 자연스럽게 넘어가고, 그 사이에 시대·장르를 잇는 **경첩(hinge) 곡**을 의식적으로 둬라. 예컨대 미국 블루스-부기에서 출발해 비틀즈류를 경첩 삼아 브리티시 기타팝으로 이동하는 식 — 시드를 따라 디깅 체인을 타고 내려가는 느낌이 들도록. 그리고 연결축을 **보컬/내러티브 한 종류로만 수렴시키지 마라**: 같은 큐레이션 안에 `groove`·`texture`(예: 클린톤으로 구르는 기타 부기, 셔플 그루브) 같은 비-보컬 축으로 묶이는 친족을 반드시 일부 섞어, 발견의 폭을 넓혀라.
 >
 > **이 판단을 lineage_notes 첫머리에 한 줄로 밝혀라.**
 >
@@ -40,6 +40,8 @@
 >    - Tame Impala "Elephant" (2012, 호주, 사이키 록) ↔ John Lennon "Well Well Well" (1970, 영국, 록) — 거친 보컬·헤비 디스토션·펑크적 폭발
 >    - Sex Pistols "God Save the Queen" (1977, 영국, 펑크) ↔ The Beatles "Birthday" (1968, 영국, 록앤롤) — 중간부 펑크 폭발 그루브
 >    - The Doors "L.A. Woman" (1971, 미국, 사이키/블루스 록) ↔ Dire Straits "Sultans of Swing" (1978, 영국, 록 컨트리 포크) — 롱폼 어쿠스틱 그루브·내러티브 보컬·도시 풍경
+>    - The Doors "L.A. Woman" ↔ ZZ Top "La Grange" (1973, 미국, 블루스 록) — 클린톤으로 굴러가는 텍사스/존 리 후커 부기 셔플 그루브 (`vocal_style`이 아니라 `groove`·`texture`로 통하는 친족)
+>    - The Doors "L.A. Woman"의 부기 그루브 ↔ The Beatles "Old Brown Shoe" (1969, 영국, 록) → Oasis "She's Electric" (1995, 영국, 브릿팝) — 기타 훅으로 휘청이며 전진하는 그루브가 미국 블루스록에서 브리티시 기타팝으로 이동하는 경첩 (비틀즈가 두 진영의 다리)
 >    - Dire Straits "Sultans of Swing" ↔ Bob Dylan "Things Have Changed" (2000, 미국, 포크 록) — 블루지 톤·읊조리는 창법·내러티브
 >
 > 5. **창법(vocal_style)은 가장 강력한 친족 신호 중 하나다.** Jim Morrison · Mark Knopfler · Bob Dylan처럼 노래를 '부른다'기보다 **읊조리거나 내뱉는** 보컬은 시대·장르·국적을 가로지르는 연결고리다. 보컬 톤·억양·화법을 적극 활용하라.
@@ -182,12 +184,16 @@ const KinshipResponseSchema = z.object({
   tracks: z.array(TrackRecSchema)
 }).refine((r) => {
   const byCat = (cat: string) => r.tracks.filter(t => t.category === cat).length
-  return byCat("influence") >= 3
-      && byCat("peer") >= 3
-      && byCat("descendant") >= 2
-      && byCat("kinship") >= 3
-}, "카테고리별 최소 개수 미달")
+  return byCat("influence") >= 2
+      && byCat("peer") >= 2
+      && byCat("descendant") >= 1
+      && byCat("kinship") >= 2
+}, "카테고리별 최소 개수 미달 (influence≥2, peer≥2, descendant≥1, kinship≥2)")
 ```
+
+> **최소 개수 완화 이력**: 원래 3/3/2/3(총 11곡)이었으나 Sonnet이 Vercel Hobby 60s 함수 한도 안에 응답을 못 끝내고 매달리는 일이 잦아 두 번 완화 → 현재 **2/2/1/2(총 7곡 최소)**. kinship은 프로덕트의 핵심이라 floor를 유지하되, 보조 카테고리는 한두 곡의 강한 픽이면 충분하다는 판단. 이 값이 단일 진실원이며 코드(`lib/kinship.ts`)와 일치해야 한다.
+
+**주의 — 이 검증은 Spotify verify *이전*에만 일어난다.** LLM이 influence≥2를 채워 통과해도, 그 곡들이 `verifyTrack`(artist 정확매치 + album 부분일치 + year ±2)에서 전부 드랍되면 최종 노출에선 카테고리가 빌 수 있다 (실제로 curation #14의 influence가 그렇게 0곡이 됐다). verify 이후의 카테고리 구멍은 `lib/curator.ts`가 별도로 처리한다 (재시도 유도) — [docs/curation-pipeline.md](curation-pipeline.md) 참조.
 
 검증 실패 시 1회 재시도 (직전 응답 + "위 조건 만족 못함. 다시 시도" 메시지).
 
@@ -206,8 +212,11 @@ const KinshipResponseSchema = z.object({
 - link_dimensions에 `groove`, `vocal_style`
 
 ### 시드 C — The Doors "L.A. Woman"
-- kinship에 Dire Straits "Sultans of Swing"
-- link_dimensions에 `mood`, `narrative`
+- 여정형 시드. lineage_notes 첫 문장이 "여정/드라이브"로 시드를 규정해야 함.
+- kinship에 Dire Straits "Sultans of Swing" (창법/내러티브 축)
+- **추가 기대: 보컬/내러티브 한 축으로만 수렴하지 말 것.** ZZ Top "La Grange"류의 부기 셔플 친족이 나오면 강한 신호 — `groove`·`texture` 축이 같은 큐레이션 안에 함께 잡혀야 한다.
+- 이상적으로는 추천곡들이 미국 블루스록 → (비틀즈류 경첩) → 브리티시 기타팝으로 이동하는 아크를 이룬다.
+- link_dimensions에 `mood`, `narrative`뿐 아니라 `groove`, `texture`도 섞여 나오는지 확인.
 
 ### 시드 D — Dire Straits "Sultans of Swing"
 - kinship/peers에 Bob Dylan "Things Have Changed" (2000)
