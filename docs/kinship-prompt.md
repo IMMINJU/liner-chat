@@ -44,6 +44,8 @@
 >    - The Doors "L.A. Woman"의 부기 그루브 ↔ The Beatles "Old Brown Shoe" (1969, 영국, 록) → Oasis "She's Electric" (1995, 영국, 브릿팝) — 기타 훅으로 휘청이며 전진하는 그루브가 미국 블루스록에서 브리티시 기타팝으로 이동하는 경첩 (비틀즈가 두 진영의 다리)
 >    - Dire Straits "Sultans of Swing" ↔ Bob Dylan "Things Have Changed" (2000, 미국, 포크 록) — 블루지 톤·읊조리는 창법·내러티브
 >
+>    **kinship 도약 기준** (NewJeans "Attention" 큐레이션에서 Jorja Smith 같은 동시대 R&B가 kinship으로 올라온 약-도약 문제를 막으려고 추가): 위 예시의 공통점은 장르·시대·국적 중 **최소 둘 이상이 시드와 확연히 다른데도** DNA로 통한다는 것. 시드와 **같은 장르·같은 시대·같은 씬에 머무는 곡은 kinship이 아니라 peer/influence/descendant**로 보내라. K-pop/현대 R&B 시드에 또 다른 동시대 R&B를 kinship으로 올리는 건 도약이 아니다(peer다). kinship은 floor가 2이므로 **서로 다른 방향으로 강을 건너는** 둘을 확보(예: 하나는 과거 시티팝, 하나는 다른 장르의 현대곡).
+>
 > 5. **창법(vocal_style)은 가장 강력한 친족 신호 중 하나다.** Jim Morrison · Mark Knopfler · Bob Dylan처럼 노래를 '부른다'기보다 **읊조리거나 내뱉는** 보컬은 시대·장르·국적을 가로지르는 연결고리다. 보컬 톤·억양·화법을 적극 활용하라.
 >
 > 6. **멜로디(melody)와 화성 진행(progression)을 적극 분석하라.** 후렴 모티프, 보컬 멜로디의 윤곽(상승/하강/도약), 멜로디 후크의 위치·반복 패턴은 시대를 넘는 친족 신호다. 코드 진행 패턴(I-V-vi-IV 류 매크로 진행), 모달 vs 토널, 브릿지/후렴 전환 방식, 키 모듈레이션도 마찬가지. 예: Beatles "Birthday" 중간 8마디의 반음계적 진행이 Sex Pistols 시드의 직진성과 통하는 식. (참고: Spotify가 audio_features/audio_analysis를 신규 앱에 비공개 전환했으므로 key/mode/tempo 같은 토널 메타데이터는 컨텍스트에 들어오지 않는다. 너의 음악 지식만으로 판단하라.)

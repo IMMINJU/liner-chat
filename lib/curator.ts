@@ -354,13 +354,20 @@ async function verifyBatch(
   }
 }
 
-// Categories that hurt most when verify empties them: influence anchors the
-// lineage and kinship is the whole product. If either lands zero verified
-// tracks we spend one extra Sonnet call trying to refill it. peer/descendant
-// going thin is tolerated (they already have low floors) and not worth a
-// second round-trip against the curator's 45s hard cap.
+// Categories we top up when verify leaves them BELOW their schema floor (not
+// just at zero — see verifyAndFilter). `want` mirrors KinshipResponseSchema's
+// per-category floor so a curation never ships under it:
+//   - influence anchors the lineage
+//   - descendant is the seed's forward generation (was previously not topped
+//     up at all, which let it ship at 0)
+//   - kinship is the whole product and the one most often thinned by verify
+//     drops landing it at 1 (under its floor of 2) — the case the old
+//     `=== 0` trigger silently missed.
+// peer is intentionally excluded: it tolerates going thin and isn't worth a
+// second round-trip. `want` here must stay in lockstep with the zod floor.
 const SUPPLEMENT_TARGET_CATEGORIES: { category: Category; want: number }[] = [
   { category: 'influence', want: 2 },
+  { category: 'descendant', want: 1 },
   { category: 'kinship', want: 2 },
 ]
 
@@ -401,31 +408,33 @@ async function verifyAndFilter(
     supplemented: false,
   }
 
-  // Which high-value categories ended up empty after verify?
+  // Which high-value categories ended up BELOW their floor after verify?
+  // (Not just empty: a kinship that landed 1 verified track is still under
+  // its floor of 2 and must be topped up — the old `=== 0` check missed this
+  // and let under-floor curations ship.) `want` carries how many MORE we need.
   const countByCat = (cat: Category) =>
     recs.filter((r) => r.category === cat).length
-  const deficits = SUPPLEMENT_TARGET_CATEGORIES.filter(
-    (t) => countByCat(t.category) === 0
-  )
+  const deficits = SUPPLEMENT_TARGET_CATEGORIES.map((t) => ({
+    category: t.category,
+    want: t.want - countByCat(t.category),
+  })).filter((d) => d.want > 0)
   if (deficits.length === 0) {
     return { recs, ...stats }
   }
+
+  const deficitLabel = deficits
+    .map((d) => `${d.category}(-${d.want})`)
+    .join('+')
 
   // Only spend the second Sonnet call if there's headroom before the hard cap.
   const remaining = deadlineMs - Date.now()
   if (remaining < SUPPLEMENT_MIN_HEADROOM_MS) {
     console.log(
-      `[curate] verify-gap: ${deficits
-        .map((d) => d.category)
-        .join('+')} empty but only ${remaining}ms left — skipping supplement`
+      `[curate] verify-gap: ${deficitLabel} under floor but only ${remaining}ms left — skipping supplement`
     )
     return { recs, ...stats }
   }
-  console.log(
-    `[curate] verify-gap: ${deficits
-      .map((d) => d.category)
-      .join('+')} empty — supplementing`
-  )
+  console.log(`[curate] verify-gap: ${deficitLabel} under floor — supplementing`)
 
   const supplement = await supplementKinship({
     ctx,
