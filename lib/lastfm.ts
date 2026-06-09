@@ -6,6 +6,36 @@ const BASE = 'https://ws.audioscrobbler.com/2.0/'
 // hint and let Sonnet work without it than starve the function budget.
 const LASTFM_TIMEOUT_MS = 5_000
 
+// Tags for a given artist/track are effectively static, so cache them in
+// module memory for the lifetime of the serverless instance. This is free
+// latency back on the hot path that matters most here: walking a digging
+// chain (same seed artist recurs) and re-curating the same seed. A cold
+// start just re-fetches; correctness never depends on the cache. Bounded so
+// a long-lived instance can't grow it without limit.
+const TAG_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6h
+const TAG_CACHE_MAX = 500
+const tagCache = new Map<string, { tags: LastfmTag[]; at: number }>()
+
+function tagCacheGet(key: string): LastfmTag[] | null {
+  const hit = tagCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at > TAG_CACHE_TTL_MS) {
+    tagCache.delete(key)
+    return null
+  }
+  return hit.tags
+}
+
+function tagCacheSet(key: string, tags: LastfmTag[]): void {
+  // Crude FIFO bound: drop the oldest insertion when full. Map preserves
+  // insertion order, so the first key is the oldest.
+  if (tagCache.size >= TAG_CACHE_MAX) {
+    const oldest = tagCache.keys().next().value
+    if (oldest !== undefined) tagCache.delete(oldest)
+  }
+  tagCache.set(key, { tags, at: Date.now() })
+}
+
 export type LastfmTag = { name: string; count: number }
 
 type LastfmTopTagsResponse = {
@@ -47,20 +77,34 @@ export async function getTrackTopTags(
   artist: string,
   track: string
 ): Promise<LastfmTag[]> {
+  const key = `t:${artist.toLowerCase()} ${track.toLowerCase()}`
+  const cached = tagCacheGet(key)
+  if (cached) return cached
   const resp = await call({
     method: 'track.getTopTags',
     artist,
     track,
     autocorrect: '1',
   })
-  return toTagArray(resp)
+  const tags = toTagArray(resp)
+  // Only cache a real hit. An empty result usually means a transient timeout
+  // or Last.fm miss; caching it would poison the seed context for 6h, so we
+  // let the next call retry instead.
+  if (tags.length > 0) tagCacheSet(key, tags)
+  return tags
 }
 
 export async function getArtistTopTags(artist: string): Promise<LastfmTag[]> {
+  const key = `a:${artist.toLowerCase()}`
+  const cached = tagCacheGet(key)
+  if (cached) return cached
   const resp = await call({
     method: 'artist.getTopTags',
     artist,
     autocorrect: '1',
   })
-  return toTagArray(resp)
+  const tags = toTagArray(resp)
+  // See getTrackTopTags: only cache a non-empty result.
+  if (tags.length > 0) tagCacheSet(key, tags)
+  return tags
 }

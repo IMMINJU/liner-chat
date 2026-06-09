@@ -370,11 +370,11 @@ const SUPPLEMENT_TARGET_CATEGORIES: { category: Category; want: number }[] = [
  * The supplement is best-effort: if it times out or finds nothing, we ship the
  * first-pass result. Returns the merged recs + combined stats.
  */
-// Headroom the supplement pass needs before the curator hard cap (45s): its
-// own 18s Sonnet budget + ~5s to re-verify the returned tracks on Spotify. If
+// Headroom the supplement pass needs before the curator hard cap (100s): its
+// own 30s Sonnet budget + ~8s to re-verify the returned tracks on Spotify. If
 // less than this remains we skip the supplement and ship the first pass — a
-// curation missing one category beats a 504 that loses everything.
-const SUPPLEMENT_MIN_HEADROOM_MS = 23_000
+// curation missing one category beats a timeout that loses everything.
+const SUPPLEMENT_MIN_HEADROOM_MS = 38_000
 
 async function verifyAndFilter(
   llm: KinshipResponse,
@@ -500,12 +500,16 @@ async function saveCuration(args: {
 /**
  * Total wall-clock cap on a single curation. We've seen Sonnet's per-call
  * timeout get swallowed by the SDK on Vercel, so this outer race is the
- * final safety net before the platform itself kills the function at 60s.
- * Anything that's still running when this fires gets reported as
- * `llm_failed` (the most common cause) so the chat UI shows a typed error
- * instead of a generic 504.
+ * final safety net before the platform itself kills the function. With Fluid
+ * Compute the platform cap is 300s and the chat route caps at 110s, so this
+ * sits at 100s — comfortably inside both, while giving the full
+ * first-call + schema-retry + supplement path room to finish instead of being
+ * cut off mid-flight (the old 45s cap was the real cause of the 1-minute
+ * timeouts: a normal 30s Sonnet call + one retry already blew past it).
+ * Anything still running when this fires is reported as `llm_failed` (the most
+ * common cause) so the chat UI shows a typed error instead of a generic 504.
  */
-const RUN_CURATION_HARD_CAP_MS = 45_000
+const RUN_CURATION_HARD_CAP_MS = 100_000
 
 export async function runCuration(args: {
   query: string | null
@@ -536,8 +540,17 @@ async function runCurationInner(
   },
   t0: number
 ): Promise<CurateResult> {
-  const lap = (name: string, start: number) =>
-    console.log(`[curate] ${name} ${Date.now() - start}ms`)
+  // Capture each phase's duration so the TOTAL line can print a single
+  // breakdown (seed/ctx/sonnet/verify/save) — the fastest way to read, in
+  // production logs, exactly which phase dominates a slow curation. Sonnet is
+  // expected to be the bulk; the breakdown makes any surprise (e.g. verify
+  // ballooning on a rate-limit) obvious without grepping separate lines.
+  const dur: Record<string, number> = {}
+  const lap = (name: string, start: number) => {
+    const ms = Date.now() - start
+    dur[name] = ms
+    console.log(`[curate] ${name} ${ms}ms`)
+  }
 
   try {
     await ensureLocalUser()
@@ -568,7 +581,7 @@ async function runCurationInner(
     let llm: KinshipResponse
     const tLlm = Date.now()
     try {
-      llm = await recommendKinship(ctx)
+      llm = await recommendKinship(ctx, t0 + RUN_CURATION_HARD_CAP_MS)
       lap('recommendKinship (Sonnet)', tLlm)
     } catch (err) {
       lap('recommendKinship FAILED', tLlm)
@@ -608,7 +621,17 @@ async function runCurationInner(
       recs,
     })
     lap('saveCuration', tSave)
-    console.log(`[curate] TOTAL ${Date.now() - t0}ms`)
+    const total = Date.now() - t0
+    const sonnetMs = dur['recommendKinship (Sonnet)'] ?? 0
+    const sonnetPct = total > 0 ? Math.round((sonnetMs / total) * 100) : 0
+    console.log(
+      `[curate] TOTAL ${total}ms ` +
+        `[seed=${dur['resolveSeed'] ?? 0} ` +
+        `ctx=${dur['buildSeedContext+chain (parallel)'] ?? 0} ` +
+        `sonnet=${sonnetMs}(${sonnetPct}%) ` +
+        `verify=${dur['verifyAndFilter'] ?? 0} ` +
+        `save=${dur['saveCuration'] ?? 0}]`
+    )
 
     const byCat: CurateOk['categories'] = {
       influence: [],

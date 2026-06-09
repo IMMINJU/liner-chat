@@ -128,7 +128,9 @@ export async function verifyTrack(
     const candYear = yearOf(cand.album?.release_date)
     if (candYear !== null && Math.abs(candYear - target.year) > 2) continue
 
-    // Match. Upsert and return.
+    // Match. Upsert artist BEFORE track — tracks.artist_id has a FK to
+    // artists.id, so these two writes must stay ordered (parallelizing them
+    // risks the track insert hitting the FK before the artist row commits).
     await upsertArtistsFromTracks([cand])
     await upsertTracks([cand])
 

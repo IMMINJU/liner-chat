@@ -122,7 +122,7 @@ DB 작업 시 `DATABASE_URL`이 `.env.local`에 있어야 한다. drizzle.config
 - 한국어/영어 코멘트는 자유. 사용자 향 메시지는 한국어.
 - **모든 사용자 향 문자열은 `lib/messages.ts`에 모은다.** 컴포넌트/라우트에 인라인 한국어 쓰지 말 것. i18n 도입 시 이 모듈만 교체하면 되도록.
 - 시간 값은 `timestamptz` (DB), 코드에선 `Date` 객체로 다룸.
-- **외부 호출은 반드시 timeout을 박는다.** Vercel Hobby의 함수 wall-clock이 60초라 한 호출이 매달리면 전체가 504로 죽는다. Spotify 호출(`lib/spotify/client.ts`)은 요청당 10초 + 429 Retry-After 5초 cap, Last.fm(`lib/lastfm.ts`)은 5초, Anthropic SDK(`lib/anthropic.ts`)는 30초. 새 외부 호출 추가 시 같은 패턴(AbortSignal.timeout 또는 SDK timeout 옵션).
+- **외부 호출은 반드시 timeout을 박는다.** 배포는 **Vercel + Fluid Compute**라 함수 wall-clock 한도가 **300초**(plain Hobby의 60초가 아님 — Fluid 토글로 상향). 그래도 한 호출이 무한정 매달리면 안 되므로 모든 외부 호출에 timeout을 건다. 라우트는 `maxDuration = 120`, 그 안에서 타임아웃 계층이 chat race 110s → 큐레이터 하드캡 100s → Sonnet 1차 55s / 보충 30s 순으로 좁혀진다(`app/api/*/route.ts`, `lib/curator.ts`, `lib/kinship.ts`). 짧은 외부 호출 캡은 그대로: Spotify(`lib/spotify/client.ts`) 요청당 10초 + 429 Retry-After 5초 cap, Last.fm(`lib/lastfm.ts`) 5초, Anthropic SDK 기본값(`lib/anthropic.ts`) 90초·retry 0(kinship 경로는 그 위에서 자체 AbortController로 더 짧게 제어). 새 외부 호출 추가 시 같은 패턴(AbortSignal.timeout 또는 SDK timeout 옵션). ※ Fluid Compute를 끄면 한도가 60초로 떨어져 이 계층이 다시 깨지므로, 끄지 말 것.
 - **사용자에게 보이는 시각은 항상 `lib/format.ts`의 `formatAbsKst` / `formatDateKst` / `formatRelativeKo`** 를 거친다. `.toISOString()` / `.toLocaleString()` 직접 호출 금지 (전자는 UTC를 그대로 찍어 한국시간으로 오인됨). 기본은 절대 시각, "마지막 재생"·"recent diggings"처럼 흐름감이 필요한 곳만 상대.
 
 ## 작업 시작 시 체크리스트

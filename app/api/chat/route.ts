@@ -4,16 +4,22 @@ import { classifyIntent } from '@/lib/intent'
 import { messages as m } from '@/lib/messages'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+// Fluid Compute raises the Hobby function ceiling from 60s to 300s. We don't
+// need the full 300 — a healthy curation finishes in 25-40s — but the extra
+// headroom lets the curator's retry + supplement passes run to completion
+// instead of being guillotined mid-flight. 120s is a generous wall that's
+// still well inside the platform cap, so a genuinely stuck call still gets a
+// typed error rather than a raw 504.
+export const maxDuration = 120
 
 /**
- * Race envelope around runCuration. The curator has its own 45s hard cap,
- * but if for any reason that cap doesn't fire (e.g. an unhandled SDK retry
- * loop), this guarantees /api/chat returns *something* before Vercel's 60s
- * function timeout kicks in. The 50s budget leaves a little headroom for the
- * intent + JSON serialization on either side.
+ * Race envelope around runCuration. The curator has its own hard cap, but if
+ * for any reason that cap doesn't fire (e.g. an unhandled SDK retry loop),
+ * this guarantees /api/chat returns *something* before the platform function
+ * timeout kicks in. Kept ~10s under maxDuration to leave room for intent
+ * classification + JSON serialization on either side.
  */
-const CHAT_HARD_CAP_MS = 50_000
+const CHAT_HARD_CAP_MS = 110_000
 
 async function withChatCap(work: Promise<CurateResult>): Promise<CurateResult> {
   const cap = new Promise<CurateResult>((resolve) =>

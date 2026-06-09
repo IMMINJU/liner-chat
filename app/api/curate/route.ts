@@ -7,7 +7,10 @@ import {
 } from '@/lib/curator'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+// Fluid Compute raises the Hobby ceiling to 300s; 120s is plenty of headroom
+// for the curator's full retry + supplement path while staying inside the cap.
+// Keep this in lockstep with app/api/chat/route.ts.
+export const maxDuration = 120
 
 const SeedSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('track_id'), track_id: z.string().min(1) }),

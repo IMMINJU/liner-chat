@@ -5,17 +5,20 @@ let cached: Anthropic | null = null
 
 /*
  * Anthropic's SDK defaults to a 10-minute timeout AND retries 2x on 5xx /
- * overloaded by default. On Vercel Hobby (60s function cap) that combination
- * is catastrophic: a single slow Sonnet response can sit for the full 60s
- * before the platform 504s the function, and our typed-error catch never
- * gets to run. We compress both knobs:
- *   - timeout: 40s per request. The first pass at 25s was clipping live
- *     kinship calls — real Sonnet response time for the 4-category prompt
- *     hovers around 20-30s. 40s leaves the curator budget (resolve seed +
- *     context + verify + save ≈ 5-8s) inside 60s without flapping.
- *   - maxRetries: 0 (one slow call is bad; two is fatal).
+ * overloaded by default. The 10-minute default is far longer than any
+ * function cap, and the 2x retry can stack two slow calls back-to-back, so we
+ * still override both — but with Fluid Compute the function ceiling is now
+ * 300s (was 60s on plain Hobby), so the per-request timeout no longer has to
+ * be aggressively tight.
+ *   - timeout: 90s per request. This is just the SDK-level backstop; the
+ *     kinship path (lib/kinship.ts) wraps each call in its own, tighter
+ *     AbortController, and intent (Haiku) is always fast. 90s only matters as
+ *     the ceiling that keeps a wedged socket from hanging toward the platform
+ *     cap.
+ *   - maxRetries: 0 (one slow call is bad; two stacked is what used to bust
+ *     the budget — keep retries off and let the curator decide on retries).
  */
-const REQUEST_TIMEOUT_MS = 40_000
+const REQUEST_TIMEOUT_MS = 90_000
 
 export function anthropic(): Anthropic {
   if (!cached) {
