@@ -1,0 +1,1 @@
+ALTER TABLE "curations" ADD COLUMN "pipeline_stats" jsonb;

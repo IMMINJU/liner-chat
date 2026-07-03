@@ -11,6 +11,9 @@ import {
   uniqueIndex,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
+// type-only: lib/pipelineStats.ts는 순수 타입 파일이라 drizzle-kit 컴파일에
+// 런타임 의존을 끌고 오지 않는다 (상대경로 — drizzle-kit은 @/ alias를 모름).
+import type { PipelineStatsV1 } from '../lib/pipelineStats'
 
 export const users = pgTable('users', {
   id: text('id').primaryKey(),
@@ -145,6 +148,9 @@ export const curations = pgTable('curations', {
     (): AnyPgColumn => curations.id
   ),
   lineageNotes: text('lineage_notes'),
+  // 파이프라인 관측 데이터 (verify 사유별/카테고리별 집계 + leap 감사 + 타이밍).
+  // nullable: 과거 행과 저장 실패 경로 허용. API 응답 계약과 무관 — DB 전용.
+  pipelineStats: jsonb('pipeline_stats').$type<PipelineStatsV1>(),
   createdAt: timestamp('created_at', { withTimezone: true })
     .defaultNow()
     .notNull(),
