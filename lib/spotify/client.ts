@@ -49,9 +49,14 @@ export async function spotifyFetch<T = unknown>(
       headers.set('Content-Type', 'application/json')
     }
     // Hard cap per-request wall-clock so a single slow Spotify call can't
-    // burn the whole function budget. AbortSignal.timeout is broadly
-    // supported in the Vercel Node runtime.
-    const signal = init.signal ?? AbortSignal.timeout(PER_REQUEST_TIMEOUT_MS)
+    // burn the whole function budget. The per-request timeout ALWAYS applies;
+    // a caller-provided signal (the curator's hard-cap abort) is combined
+    // with it rather than replacing it, so an outer abort can also cancel
+    // in-flight verify calls.
+    const timeoutSignal = AbortSignal.timeout(PER_REQUEST_TIMEOUT_MS)
+    const signal = init.signal
+      ? AbortSignal.any([init.signal, timeoutSignal])
+      : timeoutSignal
     return fetch(url, { ...init, headers, signal })
   }
 
@@ -78,7 +83,27 @@ export async function spotifyFetch<T = unknown>(
       Number.isFinite(advertised) ? advertised : 1,
       RATE_LIMIT_CAP_SECONDS
     )
-    await new Promise((r) => setTimeout(r, retryAfter * 1000))
+    // Abortable backoff: if the caller's signal (curator hard cap) fires
+    // mid-wait, stop sleeping immediately instead of holding the slot for up
+    // to 5 more seconds. The listener is removed on the normal-timeout path
+    // too — the curation signal is long-lived and shared across many fetches,
+    // so leaked listeners would pile up on it.
+    await new Promise<void>((resolve) => {
+      const onAbort = () => {
+        clearTimeout(t)
+        resolve()
+      }
+      const t = setTimeout(() => {
+        init.signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, retryAfter * 1000)
+      init.signal?.addEventListener('abort', onAbort, { once: true })
+    })
+    if (init.signal?.aborted) {
+      throw init.signal.reason instanceof Error
+        ? init.signal.reason
+        : new DOMException('Aborted', 'AbortError')
+    }
     res = await doRequest(accessToken)
     if (res.status === 429) {
       throw new SpotifyRateLimitError(advertised)
