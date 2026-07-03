@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
           runCuration({
             query: text,
             seed: intent.seed,
+            depth: intent.depth,
           })
         )
         if (!result.ok) {

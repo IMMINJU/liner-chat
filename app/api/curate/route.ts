@@ -14,7 +14,13 @@ export const maxDuration = 120
 
 const SeedSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('track_id'), track_id: z.string().min(1) }),
-  z.object({ type: z.literal('track_text'), track_query: z.string().min(1) }),
+  z.object({
+    type: z.literal('track_text'),
+    track_query: z.string().min(1),
+    // 아티스트/제목 경계가 확실할 때만 — 시드 해석의 필드필터 tier 활성화.
+    artist_hint: z.string().min(1).optional(),
+    track_hint: z.string().min(1).optional(),
+  }),
 ])
 
 const RequestSchema = z.object({

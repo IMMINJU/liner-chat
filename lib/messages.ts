@@ -41,8 +41,10 @@ export const messages = {
       verifiedOnSpotify: number
       droppedAsDuplicate: number
       droppedByDiversity: number
+      droppedByInfra?: number
     }) =>
-      `LLM 제안 ${s.proposedByLLM} · Spotify 검증 ${s.verifiedOnSpotify} · 중복 제외 ${s.droppedAsDuplicate} · 다양성 ${s.droppedByDiversity}`,
+      `LLM 제안 ${s.proposedByLLM} · Spotify 검증 ${s.verifiedOnSpotify} · 중복 제외 ${s.droppedAsDuplicate} · 다양성 ${s.droppedByDiversity}` +
+      (s.droppedByInfra ? ` · 인프라 실패 ${s.droppedByInfra}` : ''),
     linkDimensionLabels: {
       mood: '분위기',
       structure: '구성',
