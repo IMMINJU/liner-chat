@@ -119,12 +119,21 @@
 | `seed_track_id` FK→tracks |
 | `parent_curation_id` FK→curations NULL — 디깅 체인 부모 |
 | `lineage_notes` text — Sonnet의 시드 전체 분석 2-3문장 |
+| `pipeline_stats` jsonb NULL — 파이프라인 관측 데이터 (아래) |
 | `created_at` |
+
+`pipeline_stats`는 `lib/pipelineStats.ts`의 `PipelineStatsV1`(스키마 버전 `v: 1` 포함)이
+단일 진실원이다: verify 사유별 탈락(`failuresByReason`)·카테고리별 제안/수락, 보충 콜
+attempted/skippedReason/deficits/added, leap 감사 결과(`status` + verdicts — timeout도
+기록해 증거가 조용히 사라지지 않게), 단계별 타이밍. **API 응답 계약(CurateOk.stats)과
+무관한 DB 전용 관측 데이터**로, leap Phase B 결정과 verify 규칙 캘리브레이션의 근거다.
+과거 행은 NULL (마이그레이션 `0003_blue_may_parker.sql`).
 
 **Invariants:**
 - 한 큐레이션은 **정확히 한 시드**. 다중 시드는 v2.
 - `parent_curation_id`가 NULL이 아니면 그 부모의 추천 결과에서 파생된 디깅 체인.
 - 체인 루트로의 traversal은 SQL 재귀 CTE 또는 앱 레벨 반복.
+- `pipeline_stats.v`로 shape 분기 — shape 변경 시 v를 올리고 소비 코드가 분기.
 
 ### `curation_tracks`
 | 컬럼 |
@@ -133,7 +142,7 @@
 | `track_id` FK |
 | `category` ∈ {influence, peer, descendant, kinship} |
 | `sonic_link` text (한국어 1-2문장) |
-| `link_dimensions` text[] ⊆ 6 enum |
+| `link_dimensions` text[] ⊆ 8 enum (mood/structure/texture/narrative/groove/vocal_style/melody/progression) |
 | `position` int — 한 카테고리 내 정렬 |
 | PK = (curation_id, track_id) |
 

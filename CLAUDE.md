@@ -15,7 +15,7 @@
 
 그 결과 **제거된 것**: 라이브러리 동기화, 모드 1(라이브러리 장르 탐색), 플레이리스트 저장, 라이브러리 기반 중복 제외, 라이브러리 기반 auto-seed. **남은 것**: 친족 큐레이션 + Spotify 검증 + 디깅 체인 + 미리듣기(임베드). 자세한 이력은 [docs/auth-flow.md](docs/auth-flow.md).
 
-DB 스키마는 무변경 — `users`/`auth_tokens`/`liked_tracks`/`top_tracks`/`plays`/`genre_signals` 테이블은 **미사용 상태로 박제**(멀티유저 복원을 쉽게 하기 위함). 따라서 이 전환에 마이그레이션 없음.
+레거시 테이블(`users`/`auth_tokens`/`liked_tracks`/`top_tracks`/`plays`/`genre_signals`)은 **미사용 상태로 박제**(멀티유저 복원을 쉽게 하기 위함) — 로그인 제거 전환 자체에는 마이그레이션이 없었다. 활성 테이블은 이후 진화 가능: `curations.pipeline_stats`(jsonb, 관측 데이터)가 `0003` 마이그레이션으로 추가됨 ([docs/data-model.md](docs/data-model.md)).
 
 ## 동작 모드 (단일)
 
@@ -28,7 +28,7 @@ DB 스키마는 무변경 — `users`/`auth_tokens`/`liked_tracks`/`top_tracks`/
 ## 항상 지켜야 할 것
 
 1. **추천은 트랙 단위.** 아티스트 단위 추천 금지. LLM은 곡명+앨범+연도까지 명시해야 한다.
-2. **LLM 응답은 반드시 Spotify Search로 검증.** artist 정확 매치 + album 부분 일치 + release year ±2. 미매치 트랙은 조용히 드랍. **할루시네이션 노출 절대 금지.** 검증은 **앱 토큰(Client Credentials)**으로 공개 `/v1/search`만 호출 (로그인 없음). `lib/spotify/catalog.ts → verifyTrack`.
+2. **LLM 응답은 반드시 Spotify Search로 검증.** artist 정확 매치(**크레딧 전체 중** 정확 일치 — 콜라보의 2번째 크레딧 허용, 체인 제외는 모든 크레딧 검사) + **곡 제목 일치(꼬리 부제 제거 후 정확 일치)** + album 부분 일치(토큰 경계) + release year ±2(명백한 리마스터/리이슈 앨범만 연도 유예). 예외 하나: **보수적 canonicalize** — artist+제목이 정확한데 album/year 표기만 틀린 경우, 좁은 가드(±2y·비라이브·비컴필·duration 클러스터 일치 / album 일치·이른 연도만·Δ≤6) 하에 후보의 canonical 표기로 자동 수락하고 `pipeline_stats.canonicalized`로 계측. 그 외 미매치는 조용히 드랍하되 사유는 보충 프롬프트에 피드백 + `curations.pipeline_stats`에 집계 영속화. **할루시네이션 노출 절대 금지.** 검증은 **앱 토큰(Client Credentials)**으로 공개 `/v1/search`만 호출 (로그인 없음). `lib/spotify/catalog.ts → verifyTrack`, 세부는 [docs/curation-pipeline.md](docs/curation-pipeline.md) §5.
 3. **디깅 체인에서 상위 시드의 아티스트는 하위 추천에서 제외.** (`lib/curator.ts → collectChainContext`). 같은 체인을 따라 내려갈 때 이미 나온 아티스트가 반복되지 않게 한다. ※ 과거의 "사용자 라이브러리 중복 제외"는 라이브러리 자체가 없어져 폐지. 남은 중복 제외는 (a) 시드 곡 자신, (b) LLM이 중복 제안한 곡, (c) 체인 상위 아티스트뿐.
 4. **kinship 카테고리는 메타-친족이 핵심.** 장르·시대·국적이 다르지만 음악적 DNA로 연결되는 곡. 자세한 철학은 [docs/kinship-prompt.md](docs/kinship-prompt.md).
 5. **link_dimensions는 8종 enum 고정**: `mood`, `structure`, `texture`, `narrative`, `groove`, `vocal_style`, `melody`, `progression`. 새로 추가하려면 enum/zod/tool/문서/UI/메시지 동시 갱신.
@@ -36,7 +36,7 @@ DB 스키마는 무변경 — `users`/`auth_tokens`/`liked_tracks`/`top_tracks`/
 7. **LLM 모델 분리 유지**: 의도 분류=Haiku 4.5(`claude-haiku-4-5`), 친족 추천=Sonnet 4.6(`claude-sonnet-4-6`). 한 쪽에서 모델을 임의로 바꾸지 말 것.
 8. **DB 스키마 변경은 반드시 `pnpm db:generate`로 마이그레이션 생성.** 직접 SQL 수정 금지.
 9. **추천 신호 우선순위**: 외부 사실(콜라보/투어/직접 언급) → 계보(영향원/동시대/후속) → 프로덕션(프로듀서/레이블) → 소닉(link_dimensions 8종). 외부 사실은 잡힐 때 무조건 표면화하고 sonic_link에 명시. 단 LLM이 모르면 만들지 말 것.
-10. **청취자 친숙도 조정 (반쪽만 생존)**: `listenerProfile`은 여전히 시드 컨텍스트에 포함되지만, 로그인이 없어 사용자 라이브러리를 프로파일링할 수 없다. 따라서 `librarySophistication`은 **항상 `'mixed'`로 고정**(라이브러리 부재의 정직한 폴백), `seedPopularity`만 **시드 곡 자체에서 실측**해서 살아있다. obscure/mainstream 분기 로직은 프롬프트(`kinship.ts` 섹션 8)에 남겨두되, 실제로는 mixed 경로 + seedPopularity만 작동. 라이브러리 sophistication을 되살리려면 멀티유저 복원이 선행돼야 함.
+10. **청취자 친숙도 조정**: 로그인이 없어 사용자 라이브러리를 프로파일링할 수 없으므로 `librarySophistication`의 **기본값은 `'mixed'`**(라이브러리 부재의 정직한 폴백), `seedPopularity`만 **시드 곡 자체에서 실측**. 단 **사용자가 채팅에서 명시적으로 깊이를 조향하면**(intent `depth`: "더 유명한 걸로"→mainstream, "더 깊게/딥컷"→deep→obscure) 그 **명시 입력 신호**로 채운다 — 라이브러리 *추론*이 아니라 사용자 *선언*이라 정직한 폴백 원칙과 충돌하지 않는다. 프롬프트 섹션 8의 obscure/mainstream 분기가 이 경로로 재활성화됨. 사용자 요청 원문도 `userNote`로 프롬프트에 조향 힌트로 전달된다(우선순위 최하, 구조·검증 규칙 불변). 라이브러리 기반 sophistication 추론을 되살리려면 멀티유저 복원이 선행돼야 함.
 11. **lineage_notes는 큐레이터의 의도**(AccuRadio 채널 헤더 스타일). 단순 "이 곡의 친족"이 아니라 "어떤 청취자에게 어떤 발견을 시키는 큐레이션인지" 명시.
 
 ## 디렉터리 지도
@@ -91,6 +91,15 @@ pnpm lint             # ESLint
 pnpm db:generate      # 스키마 변경 후 마이그레이션 SQL 생성
 pnpm db:push          # Neon에 스키마 적용 (개발용)
 pnpm db:studio        # Drizzle Studio (브라우저 GUI)
+
+pnpm tsx scripts/report-pipeline-stats.ts [--since=YYYY-MM-DD] [--calibration-only|--exclude-calibration]
+                      # pipeline_stats 관측 리포트 (verify/보충/leap/타이밍 집계,
+                      # leap Phase B 게이트 판정. read-only, .env.local 자체 로딩)
+
+pnpm tsx scripts/calibrate-pipeline.ts --yes [--chain]
+                      # 캘리브레이션 러너: 카논+카나리아 시드로 실큐레이션을 돌려
+                      # pipeline_stats 표본 능동 축적 (⚠ 실비용 발생 — --yes 필수.
+                      # --chain은 1단계 디깅도 실행)
 ```
 
 DB 작업 시 `DATABASE_URL`이 `.env.local`에 있어야 한다. drizzle.config.ts는 `process.env.DATABASE_URL`을 읽음.
