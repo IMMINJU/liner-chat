@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useRef, useState, type FormEvent } from 'react'
 import type { ChatResponse } from '@/app/api/chat/route'
+import { stripMarkdownEmphasis } from '@/lib/format'
 import { messages as m, pipelineErrorFor } from '@/lib/messages'
 
 // Category render order for the recommendation thumbnails in the summary card.
@@ -146,7 +147,7 @@ export function HomeChat() {
                   color: 'rgba(244, 239, 230, 0.9)',
                 }}
               >
-                {response.lineage_notes}
+                {stripMarkdownEmphasis(response.lineage_notes)}
               </blockquote>
 
               <div className="space-y-6 mb-8">

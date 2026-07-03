@@ -1,3 +1,4 @@
+import { stripMarkdownEmphasis } from '@/lib/format'
 import { messages as m } from '@/lib/messages'
 import { DigDeeperButton } from './DigDeeperButton'
 
@@ -83,7 +84,7 @@ export function TrackCard(props: TrackCardProps) {
             color: 'rgba(201, 166, 93, 0.9)',
           }}
         >
-          {props.sonicLink}
+          {stripMarkdownEmphasis(props.sonicLink)}
         </p>
       ) : null}
 

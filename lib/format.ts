@@ -14,6 +14,17 @@
  *                              for "last played", "recent diggings", etc.
  */
 
+/**
+ * LLM 생성 텍스트(lineage_notes/sonic_link)의 마크다운 강조 마커 제거 —
+ * Sonnet이 볼드("별표 2개로 감싼 텍스트")를 섞으면 UI가 플레인 텍스트로
+ * 렌더해 별표가 그대로 노출된다. 짝 지어진 강조 마커만 벗긴다(*NSYNC처럼
+ * 홑 별표는 이름의 일부일 수 있어 보존). 생성 시점(kinship.ts)과 렌더
+ * 시점 양쪽에서 사용 — 렌더 쪽은 이미 저장된 과거 행까지 정리하기 위함.
+ */
+export function stripMarkdownEmphasis(s: string): string {
+  return s.replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+}
+
 const KST = 'Asia/Seoul'
 
 const ABS_FORMAT = new Intl.DateTimeFormat('ko-KR', {

@@ -7,7 +7,7 @@ import { Breadcrumb } from '@/components/Breadcrumb'
 import { DiggingProvider } from '@/components/DiggingProvider'
 import { TrackCard } from '@/components/TrackCard'
 import { compressForBreadcrumb, loadAncestry } from '@/lib/ancestry'
-import { formatAbsKst } from '@/lib/format'
+import { formatAbsKst, stripMarkdownEmphasis } from '@/lib/format'
 import { messages as m } from '@/lib/messages'
 import { LOCAL_USER } from '@/lib/localUser'
 
@@ -194,7 +194,7 @@ export default async function CurationDetailPage({
                 maxWidth: '800px',
               }}
             >
-              {curation.lineageNotes}
+              {stripMarkdownEmphasis(curation.lineageNotes)}
             </blockquote>
           ) : null}
         </section>
